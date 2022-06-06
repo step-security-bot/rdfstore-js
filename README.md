@@ -158,7 +158,7 @@ implemented at the moment, a gulp target can be executed:
 $ gulp specs
 ```
 
-Additionally, there are some smoke tests for both browser versions that can be found ithe 'spec/browser'' directory.
+Additionally, there are some smoke tests for both browser versions that can be found in the 'spec/browser'' directory.
 
 ## API
 
