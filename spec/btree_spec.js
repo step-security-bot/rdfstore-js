@@ -34,8 +34,8 @@ describe('BTree', function(){
 
             var found = [];
             var mustFind = [1, 2, 3, 4, 5, 6, 7, 8, 11, 14, 15];
-            tree.walk(function(i){
-                found.push(i);
+            tree.walk(function(n){
+                found.push(n);
             }, function(){
                 for(var i=0; i<found.length; i++) {
                     expect(""+found[i].key).toBe(""+mustFind[i]);
@@ -161,7 +161,7 @@ describe('BTree', function(){
         });
     });
 
-    it("Should be possible to insert and delete big collections on data", function(done){
+    xit("Should be possible to insert and delete big collections on data", function(done){
 
         var max = 1;
         var max_data = 10000;
