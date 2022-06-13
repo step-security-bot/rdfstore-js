@@ -532,16 +532,15 @@ parsing:
 
 - [jsonld](https://github.com/digitalbazaar/jsonld.js), developed by Digital Bazaar and released under the New BSD license.
 
-##Frontend
+~~##Frontend~~
 
-A stand-along frontend for the store built using electron has been added in version 0.9.7.
-You can build the frontend running the command:
+~~A stand-along frontend for the store built using electron has been added in version 0.9.7. You can build the frontend running the command:~~
 
 ```bash
 $ gulp frontend
 ```
 
-The file will be added under the releases directory.
+~~The file will be added under the releases directory.~~ (Removed in v0.9.18-alpha.1 due to dependency maintenance issues.)
 
 ##Contributing
 
