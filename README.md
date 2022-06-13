@@ -122,7 +122,7 @@ The library can be installed using NPM:
 $ npm install rdfstore
 ```
 
-The library can also be installed via bower using a global module:
+~~The library can also be installed via bower using a global module:~~ (Removed in v0.9.18-alpha.1 due to dependency maintenance issues.)
 
 ```bash
 $ bower install rdfstore

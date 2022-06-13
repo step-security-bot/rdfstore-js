@@ -40,9 +40,7 @@
   "devDependencies": {
     "acorn": "^8.7.1",
     "async": "^3.2.3",
-    "bower-resolve": "^2.2.1",
     "browserify": "17.0.0",
-    "debowerify": "^1.5.0",
     "escodegen": "^2.0.0",
     "glob": "^8.0.3",
     "gulp": "3.9.1",
