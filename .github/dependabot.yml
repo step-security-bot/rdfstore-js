@@ -5,7 +5,16 @@
 
 version: 2
 updates:
-    # Maintain dependencies for yarn
+    # Maintain dependencies for GitHub Actions
+    - package-ecosystem: 'github-actions'
+      directory: '/'
+      schedule:
+          interval: 'daily'
+      target-branch: 'develop'
+      labels:
+          - 'gh actions dependencies'
+    
+    # Maintain dependencies for npm/yarn
     - package-ecosystem: 'npm'
       directory: '/'
       schedule:
