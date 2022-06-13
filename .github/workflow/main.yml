@@ -1,0 +1,44 @@
+on:
+  push:
+    # trigger on all branches except for dependabot-triggered push events
+    branches-ignore: [ dependabot/** ]
+    tags:
+      - 'v*'    # trigger on all tags
+    paths-ignore:
+      - '**.md' # ignore changes in markdown files
+  pull_request:
+    branches: [ master ]
+    types: [ opened, synchronize, reopened ]
+
+jobs:
+  test:
+    name: Run tests (Node v${{ matrix.node-version }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        node-version: [14.17, 16, 17]
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Get all history and branches
+
+      - name: Set up node ${{ matrix.node-version}}
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'yarn'
+
+      - name: yarn install dependencies
+        run: |
+          yarn install
+
+      - name: Run CI tests
+        run: |
+          gulp
+
+      - name: Test build
+        run: |
+          gulp browser
