@@ -277,23 +277,23 @@ Store.prototype.node = function() {
     var callback = null;
     var nodeUri  = null;
     if(arguments.length === 2) {
-	nodeUri = arguments[0];
-	callback = arguments[1] || function(){};
-	graphUri = this.engine.lexicon.defaultGraphUri;
+		nodeUri = arguments[0];
+		callback = arguments[1] || function(){};
+		graphUri = this.engine.lexicon.defaultGraphUri;
     } else if(arguments.length === 3) {
-	nodeUri = arguments[0];
-	graphUri = arguments[1];
-	callback = arguments[2] || function(){};
+		nodeUri = arguments[0];
+		graphUri = arguments[1];
+		callback = arguments[2] || function(){};
     } else {
-	throw("An optional graph URI, node URI and a callback function must be provided");
+		throw("An optional graph URI, node URI and a callback function must be provided");
     }
 
     if(this.rdf.resolve(graphUri) != null) {
-	graphUri = this.rdf.resolve(graphUri);
+		graphUri = this.rdf.resolve(graphUri);
     }
 
     if(this.rdf.resolve(nodeUri) != null) {
-	nodeUri = this.rdf.resolve(nodeUri);
+		nodeUri = this.rdf.resolve(nodeUri);
     }
 
     this.engine.execute("CONSTRUCT { <" + nodeUri + "> ?p ?o } WHERE { GRAPH <" + graphUri + "> { <" + nodeUri + "> ?p ?o } }", callback);
@@ -698,59 +698,59 @@ Store.prototype.load = function(){
     var options = {};
 
     if(arguments.length === 3) {
-	graph = this.rdf.createNamedNode(this.engine.lexicon.defaultGraphUri);
-	mediaType = arguments[0];
-	data = arguments[1];
-	callback= arguments[2] || function(){};
+		graph = this.rdf.createNamedNode(this.engine.lexicon.defaultGraphUri);
+		mediaType = arguments[0];
+		data = arguments[1];
+		callback= arguments[2] || function(){};
     } else if(arguments.length === 4) {
-	mediaType = arguments[0];
-	data = arguments[1];
-	options = arguments[2];
-	if(typeof(options) === 'string') {
-	    graph = this.rdf.createNamedNode(options);
-	    options = {};
-	} else {
-	    graph = this.rdf.createNamedNode(options.graph || this.engine.lexicon.defaultGraphUri);
-	    delete options['graph'];
-	}
-	callback= arguments[3] || function(){};
+		mediaType = arguments[0];
+		data = arguments[1];
+		options = arguments[2];
+		if(typeof(options) === 'string') {
+			graph = this.rdf.createNamedNode(options);
+			options = {};
+		} else {
+			graph = this.rdf.createNamedNode(options.graph || this.engine.lexicon.defaultGraphUri);
+			delete options['graph'];
+		}
+		callback= arguments[3] || function(){};
     } else if(arguments.length === 2) {
-	throw("The mediaType of the parser, the data a callback and an optional graph must be provided");
+		throw("The mediaType of the parser, the data a callback and an optional graph must be provided");
     }
 
     if(mediaType === 'remote') {
-	data = this.rdf.createNamedNode(data);
-	var query = "LOAD <"+data.valueOf()+"> INTO GRAPH <"+graph.valueOf()+">";
-	this.engine.execute(query, callback);
+		data = this.rdf.createNamedNode(data);
+		var query = "LOAD <"+data.valueOf()+"> INTO GRAPH <"+graph.valueOf()+">";
+		this.engine.execute(query, callback);
     } else {
 
-	var that = this;
+		var that = this;
 
-	var parser = this.engine.rdfLoader.parsers[mediaType];
+		var parser = this.engine.rdfLoader.parsers[mediaType];
 
-	if (!parser) return callback(new Error("Cannot find parser for the provided media type:"+mediaType));
+		if (!parser) return callback(new Error("Cannot find parser for the provided media type:"+mediaType));
 
-	var cb = function(err, quads) {
-	    if(err) {
-		callback(err, quads);
-	    } else {
-		that.engine.batchLoad(quads,function(success){
-		    if(success != null){
-			callback(null,success);
-		    } else {
-			callback(new Error("Erro batch-loading triples."));
-		    }
-		});
-	    }
-	};
+		var cb = function(err, quads) {
+			if(err) {
+			callback(err, quads);
+			} else {
+				that.engine.batchLoad(quads,function(success){
+					if(success != null){
+						callback(null,success);
+					} else {
+						callback(new Error("Error batch-loading triples."));
+					}
+				});
+	    	}
+		};
 
-	var args = [parser, {'token':'uri', 'value':graph.valueOf()}, data, options, cb];
+		var args = [parser, {'token':'uri', 'value':graph.valueOf()}, data, options, cb];
 
-	if(data && typeof(data)==='string' && data.indexOf('file://')=== 0) {
-	    this.engine.rdfLoader.loadFromFile.apply(null, args);
-	} else {
-	    this.engine.rdfLoader.tryToParse.apply(null, args);
-	}
+		if(data && typeof(data)==='string' && data.indexOf('file://')=== 0) {
+		    this.engine.rdfLoader.loadFromFile.apply(null, args);
+		} else {
+	    	this.engine.rdfLoader.tryToParse.apply(null, args);
+		}
     }
 };
 
