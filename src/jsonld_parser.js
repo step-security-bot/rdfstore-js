@@ -3,10 +3,11 @@ var jsonld = require('jsonld');
 var toTriples = function (input, graph, cb) {
     var rval = null;
 
-    // normalize input
-    jsonld.normalize(input, {}, function (err, normalized) {
-        if (err)
+    // convert input to normalized RDF
+    jsonld.toRDF(input, {}, function (err, normalized) {
+        if (err) {
             cb(err);
+        }
         else {
             var parseTerm = function (term) {
                 if (term.type === 'blank node') {
