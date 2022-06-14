@@ -1,3 +1,5 @@
+name: CI Workflow
+
 on:
   push:
     # trigger on all branches except for dependabot-triggered push events
