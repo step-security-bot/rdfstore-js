@@ -39,12 +39,10 @@ var toTriples = function (input, graph, cb) {
 
             // generate triples
             var quit = false;
-            for (var p in normalized) {
-                var triples = normalized[p];
-                for (var i = 0; i < triples.length; i++) {
-                    var triple = triples[i];
-                    callback(triple.subject, triple.predicate, triple.object);
-                }
+            var triples = normalized;
+            for (var i = 0; i < triples.length; i++) {
+                var triple = triples[i];
+                callback(triple.subject, triple.predicate, triple.object);
             }
 
             cb(null, rval);
