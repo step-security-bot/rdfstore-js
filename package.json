@@ -30,7 +30,7 @@
   ],
   "main": "src/store",
   "dependencies": {
-    "jsonld": "^0.4.12",
+    "jsonld": "^1.8.1",
     "n3": "^0.11.3"
   },
   "optionalDependencies": {
