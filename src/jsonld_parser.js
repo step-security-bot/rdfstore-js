@@ -10,15 +10,15 @@ var toTriples = function (input, graph, cb) {
         }
         else {
             var parseTerm = function (term) {
-                if (term.type === 'blank node') {
+                if (term.termType === 'BlankNode') {
                     return {'blank': term.value};
-                } else if (term.type === 'IRI') {
+                } else if (term.termType === 'NamedNode') {
                     return {'token': 'uri', 'value': term.value};
-                } else if (term.type === 'literal') {
+                } else if (term.termType === 'Literal') {
                     if (term.language != null) {
                         return {'literal': '"' + term.value + '"@' + term.language};
                     } else if (term.datatype !== null) {
-                        return {'literal': '"' + term.value + '"^^<' + term.datatype + ">"};
+                        return {'literal': '"' + term.value + '"^^<' + term.datatype.value + ">"};
                     } else {
                         return {'literal': '"' + term.value + '"'};
 
