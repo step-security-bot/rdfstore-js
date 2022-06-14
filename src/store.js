@@ -270,7 +270,7 @@ Store.prototype.graph = function() {
  * @arguments
  * @param {String} nodeURI URI of the node to look for
  * @param {String} [graphURI] If this parameter is missing, the node will be looked into the default graph
- * @param {Functon} callback
+ * @param {Function} callback
  */
 Store.prototype.node = function() {
     var graphUri = null;
@@ -667,14 +667,14 @@ Store.prototype.registerDefaultProfileNamespaces = function() {
 
 /**
  * Load triples into a graph in the store. Data can be passed directly to the method
- * or a remote URI speifying where the data is located can be used.<br/>
+ * or a remote URI specifying where the data is located can be used.<br/>
  *<br/>
  * If the data is passed directly to the load function, the media type stating the format
  * of the data must also be passed to the function.<br/>
  *<br/>
  * If an URI is passed as a parameter, the store will attempt to perform content negotiation
  * with the remote server and get a representation for the RDF data matching one of the
- * the RDF parsers registered in the store. In this case, the media type parameter must be
+ * RDF parsers registered in the store. In this case, the media type parameter must be
  * set to the <code>'remote'</code> value.<br/>
  *<br/>
  * An additional URI for the graph where the parsed data will be loaded and a callback function
@@ -682,7 +682,7 @@ Store.prototype.registerDefaultProfileNamespaces = function() {
  * default graph.<br/>
  *<br/>
  * By default loading data will not trigger notification through the events API. If events needs to
- * be trigger, the functio <code>setBatchLoadEvents</code> must be invoked with a true parameter.
+ * be triggered, the function <code>setBatchLoadEvents</code> must be invoked with a true parameter.
  *
  * @arguments
  * @param {String} mediaType Media type (application/json, text/n3...) of the data to be parsed or the value <code>'remote'</code> if a URI for the data is passed instead
