@@ -1,56 +1,50 @@
 var jsonld = require('jsonld');
 
-var toTriples = function (input, graph, cb) {
+var toTriples = async function (input, graph, cb) {
     var rval = null;
 
-    // normalize input
-    jsonld.normalize(input, {}, function (err, normalized) {
-        if (err)
-            cb(err);
-        else {
-            var parseTerm = function (term) {
-                if (term.type === 'blank node') {
-                    return {'blank': term.value};
-                } else if (term.type === 'IRI') {
-                    return {'token': 'uri', 'value': term.value};
-                } else if (term.type === 'literal') {
-                    if (term.language != null) {
-                        return {'literal': '"' + term.value + '"@' + term.language};
-                    } else if (term.datatype !== null) {
-                        return {'literal': '"' + term.value + '"^^<' + term.datatype + ">"};
-                    } else {
-                        return {'literal': '"' + term.value + '"'};
+    // convert input to normalized RDF
+    const normalized = await jsonld.toRDF(input, {})
 
-                    }
-                }
-            };
+    var parseTerm = function (term) {
+        if (term.termType === 'BlankNode') {
+            return {'blank': term.value};
+        } else if (term.termType === 'NamedNode') {
+            return {'token': 'uri', 'value': term.value};
+        } else if (term.termType === 'Literal') {
+            if (term.language != null) {
+                return {'literal': '"' + term.value + '"@' + term.language};
+            } else if (term.datatype !== null) {
+                return {'literal': '"' + term.value + '"^^<' + term.datatype.value + ">"};
+            } else {
+                return {'literal': '"' + term.value + '"'};
 
-            rval = [];
-            var callback = function (s, p, o) {
-                rval.push({
-                    'subject': parseTerm(s),
-                    'predicate': parseTerm(p),
-                    'object': parseTerm(o),
-                    'graph': graph
-                });
-            };
-
-
-            // generate triples
-            var quit = false;
-            for (var p in normalized) {
-                var triples = normalized[p];
-                for (var i = 0; i < triples.length; i++) {
-                    var triple = triples[i];
-                    callback(triple.subject, triple.predicate, triple.object);
-                }
             }
-
-            cb(null, rval);
-
         }
-    });
-};
+    };
+
+    rval = [];
+    var callback = function (s, p, o) {
+        rval.push({
+            'subject': parseTerm(s),
+            'predicate': parseTerm(p),
+            'object': parseTerm(o),
+            'graph': graph
+        });
+    };
+
+
+    // generate triples
+    var quit = false;
+    var triples = normalized;
+    for (var i = 0; i < triples.length; i++) {
+        var triple = triples[i];
+        callback(triple.subject, triple.predicate, triple.object);
+    }
+
+    cb(null, rval);
+
+}
 
 
 // exports

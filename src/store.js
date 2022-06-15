@@ -270,30 +270,30 @@ Store.prototype.graph = function() {
  * @arguments
  * @param {String} nodeURI URI of the node to look for
  * @param {String} [graphURI] If this parameter is missing, the node will be looked into the default graph
- * @param {Functon} callback
+ * @param {Function} callback
  */
 Store.prototype.node = function() {
     var graphUri = null;
     var callback = null;
     var nodeUri  = null;
     if(arguments.length === 2) {
-	nodeUri = arguments[0];
-	callback = arguments[1] || function(){};
-	graphUri = this.engine.lexicon.defaultGraphUri;
+		nodeUri = arguments[0];
+		callback = arguments[1] || function(){};
+		graphUri = this.engine.lexicon.defaultGraphUri;
     } else if(arguments.length === 3) {
-	nodeUri = arguments[0];
-	graphUri = arguments[1];
-	callback = arguments[2] || function(){};
+		nodeUri = arguments[0];
+		graphUri = arguments[1];
+		callback = arguments[2] || function(){};
     } else {
-	throw("An optional graph URI, node URI and a callback function must be provided");
+		throw("An optional graph URI, node URI and a callback function must be provided");
     }
 
     if(this.rdf.resolve(graphUri) != null) {
-	graphUri = this.rdf.resolve(graphUri);
+		graphUri = this.rdf.resolve(graphUri);
     }
 
     if(this.rdf.resolve(nodeUri) != null) {
-	nodeUri = this.rdf.resolve(nodeUri);
+		nodeUri = this.rdf.resolve(nodeUri);
     }
 
     this.engine.execute("CONSTRUCT { <" + nodeUri + "> ?p ?o } WHERE { GRAPH <" + graphUri + "> { <" + nodeUri + "> ?p ?o } }", callback);
@@ -667,14 +667,14 @@ Store.prototype.registerDefaultProfileNamespaces = function() {
 
 /**
  * Load triples into a graph in the store. Data can be passed directly to the method
- * or a remote URI speifying where the data is located can be used.<br/>
+ * or a remote URI specifying where the data is located can be used.<br/>
  *<br/>
  * If the data is passed directly to the load function, the media type stating the format
  * of the data must also be passed to the function.<br/>
  *<br/>
  * If an URI is passed as a parameter, the store will attempt to perform content negotiation
  * with the remote server and get a representation for the RDF data matching one of the
- * the RDF parsers registered in the store. In this case, the media type parameter must be
+ * RDF parsers registered in the store. In this case, the media type parameter must be
  * set to the <code>'remote'</code> value.<br/>
  *<br/>
  * An additional URI for the graph where the parsed data will be loaded and a callback function
@@ -682,7 +682,7 @@ Store.prototype.registerDefaultProfileNamespaces = function() {
  * default graph.<br/>
  *<br/>
  * By default loading data will not trigger notification through the events API. If events needs to
- * be trigger, the functio <code>setBatchLoadEvents</code> must be invoked with a true parameter.
+ * be triggered, the function <code>setBatchLoadEvents</code> must be invoked with a true parameter.
  *
  * @arguments
  * @param {String} mediaType Media type (application/json, text/n3...) of the data to be parsed or the value <code>'remote'</code> if a URI for the data is passed instead
@@ -698,59 +698,59 @@ Store.prototype.load = function(){
     var options = {};
 
     if(arguments.length === 3) {
-	graph = this.rdf.createNamedNode(this.engine.lexicon.defaultGraphUri);
-	mediaType = arguments[0];
-	data = arguments[1];
-	callback= arguments[2] || function(){};
+		graph = this.rdf.createNamedNode(this.engine.lexicon.defaultGraphUri);
+		mediaType = arguments[0];
+		data = arguments[1];
+		callback= arguments[2] || function(){};
     } else if(arguments.length === 4) {
-	mediaType = arguments[0];
-	data = arguments[1];
-	options = arguments[2];
-	if(typeof(options) === 'string') {
-	    graph = this.rdf.createNamedNode(options);
-	    options = {};
-	} else {
-	    graph = this.rdf.createNamedNode(options.graph || this.engine.lexicon.defaultGraphUri);
-	    delete options['graph'];
-	}
-	callback= arguments[3] || function(){};
+		mediaType = arguments[0];
+		data = arguments[1];
+		options = arguments[2];
+		if(typeof(options) === 'string') {
+			graph = this.rdf.createNamedNode(options);
+			options = {};
+		} else {
+			graph = this.rdf.createNamedNode(options.graph || this.engine.lexicon.defaultGraphUri);
+			delete options['graph'];
+		}
+		callback= arguments[3] || function(){};
     } else if(arguments.length === 2) {
-	throw("The mediaType of the parser, the data a callback and an optional graph must be provided");
+		throw("The mediaType of the parser, the data a callback and an optional graph must be provided");
     }
 
     if(mediaType === 'remote') {
-	data = this.rdf.createNamedNode(data);
-	var query = "LOAD <"+data.valueOf()+"> INTO GRAPH <"+graph.valueOf()+">";
-	this.engine.execute(query, callback);
+		data = this.rdf.createNamedNode(data);
+		var query = "LOAD <"+data.valueOf()+"> INTO GRAPH <"+graph.valueOf()+">";
+		this.engine.execute(query, callback);
     } else {
 
-	var that = this;
+		var that = this;
 
-	var parser = this.engine.rdfLoader.parsers[mediaType];
+		var parser = this.engine.rdfLoader.parsers[mediaType];
 
-	if (!parser) return callback(new Error("Cannot find parser for the provided media type:"+mediaType));
+		if (!parser) return callback(new Error("Cannot find parser for the provided media type:"+mediaType));
 
-	var cb = function(err, quads) {
-	    if(err) {
-		callback(err, quads);
-	    } else {
-		that.engine.batchLoad(quads,function(success){
-		    if(success != null){
-			callback(null,success);
-		    } else {
-			callback(new Error("Erro batch-loading triples."));
-		    }
-		});
-	    }
-	};
+		var cb = function(err, quads) {
+			if(err) {
+			callback(err, quads);
+			} else {
+				that.engine.batchLoad(quads,function(success){
+					if(success != null){
+						callback(null,success);
+					} else {
+						callback(new Error("Error batch-loading triples."));
+					}
+				});
+	    	}
+		};
 
-	var args = [parser, {'token':'uri', 'value':graph.valueOf()}, data, options, cb];
+		var args = [parser, {'token':'uri', 'value':graph.valueOf()}, data, options, cb];
 
-	if(data && typeof(data)==='string' && data.indexOf('file://')=== 0) {
-	    this.engine.rdfLoader.loadFromFile.apply(null, args);
-	} else {
-	    this.engine.rdfLoader.tryToParse.apply(null, args);
-	}
+		if(data && typeof(data)==='string' && data.indexOf('file://')=== 0) {
+		    this.engine.rdfLoader.loadFromFile.apply(null, args);
+		} else {
+	    	this.engine.rdfLoader.tryToParse.apply(null, args);
+		}
     }
 };
 
@@ -850,7 +850,7 @@ Store.prototype.close = function(cb) {
 /**
  * Version of the store
  */
-Store.VERSION = "0.9.18-alpha.2";
+Store.VERSION = "0.9.18-alpha.3";
 
 /**
  * Create a new RDFStore instance that will be

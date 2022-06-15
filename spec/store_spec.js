@@ -498,7 +498,7 @@ describe("Store", function () {
                     "xsd": "http://www.w3.org/2001/XMLSchema#",
                     "name": "http://xmlns.com/foaf/0.1/name",
                     "age": {"@id": "http://xmlns.com/foaf/0.1/age", "@type": "xsd:integer"},
-                    "homepage": {"@id": "http://xmlns.com/foaf/0.1/homepage", "@ype": "@id"},
+                    "homepage": {"@id": "http://xmlns.com/foaf/0.1/homepage", "@type": "@id"},
                     "ex": "http://example.org/people/"
                 },
                 "@id": "ex:john_smith",

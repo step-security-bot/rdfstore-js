@@ -1,13 +1,11 @@
 var gulp = require('gulp');
 var clean = require('gulp-clean');
-var browserify = require('gulp-browserify');
-var rename     = require('gulp-rename');
-var closureCompiler = require('gulp-closure-compiler');
+var browserify = require('browserify');
+var minify = require('gulp-minify');
 var source = require('vinyl-source-stream');
 var jasmine = require('gulp-jasmine');
 var PEG = require('pegjs');
 var fs = require('fs');
-var packageJson = require('./package.json');
 
 gulp.task('clean-dist', function(){
     return gulp.src('dist', {read: false})
@@ -15,28 +13,26 @@ gulp.task('clean-dist', function(){
 });
 
 gulp.task('browserify', ['clean-dist'], function() {
-
-    return gulp.src(['./src/store.js'])
-        .pipe(browserify({
+    return browserify('./src/store.js',{
             standalone: 'rdfstore',
             exclude: ["sqlite3","indexeddb-js"]
-        }))
-        .pipe(rename('rdfstore.js'))
+        })
+        .bundle()
+        .on('error', function(err) {
+            console.log("Error : " + err.message)
+        })
+        .pipe(source('rdfstore.js'))
         .pipe(gulp.dest('./dist'));
 });
 
 gulp.task('minimize', [ 'browserify' ], function() {
     return gulp.src('dist/*.js')
-        .pipe(closureCompiler({
-            continueWithWarnings: true,
-            compilerPath: './node_modules/google-closure-compiler/compiler.jar',
-            fileName: 'dist/rdfstore_min.js',
-            compilerFlags: {
-                'language_in': 'ECMASCRIPT5'
-                //'compilation_level': 'ADVANCED_OPTIMIZATIONS'
+        .pipe(minify({
+            ext: {
+                min: '_min.js'
             }
         }))
-        .pipe(gulp.dest("."));
+        .pipe(gulp.dest("dist"));
 });
 
 gulp.task('performance',function(){
