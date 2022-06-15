@@ -21,6 +21,9 @@ gulp.task('browserify', ['clean-dist'], function() {
             standalone: 'rdfstore',
             exclude: ["sqlite3","indexeddb-js"]
         }))
+        .on('error', function(err) {
+            console.log("Error : " + err.message)
+        })
         .pipe(rename('rdfstore.js'))
         .pipe(gulp.dest('./dist'));
 });
