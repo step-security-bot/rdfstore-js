@@ -8,11 +8,11 @@ var PEG = require('pegjs');
 var fs = require('fs');
 
 gulp.task('clean-dist', function(){
-    return gulp.src('dist', {read: false})
+    return gulp.src('dist', {read: false, allowEmpty: true})
         .pipe(clean());
 });
 
-gulp.task('browserify', ['clean-dist'], function() {
+gulp.task('browserify', function() {
     return browserify('./src/store.js',{
             standalone: 'rdfstore',
             exclude: ["sqlite3","indexeddb-js"]
@@ -25,14 +25,14 @@ gulp.task('browserify', ['clean-dist'], function() {
         .pipe(gulp.dest('./dist'));
 });
 
-gulp.task('minimize', [ 'browserify' ], function() {
+gulp.task('minimize', function() {
     return gulp.src('dist/*.js')
         .pipe(minify({
             ext: {
                 min: '_min.js'
             }
         }))
-        .pipe(gulp.dest("dist"));
+        .pipe(gulp.dest('dist'));
 });
 
 gulp.task('performance',function(){
@@ -41,11 +41,15 @@ gulp.task('performance',function(){
 
 gulp.task('specs', function () {
     return gulp.src('./spec/*.js')
-        .pipe(jasmine({includeStackTrace: true, verbose:true}));
+        .pipe(jasmine({includeStackTrace: true, verbose:true}))
+        .on('error', function(err) {
+            console.log("Error : " + err.message)
+        });
+
 });
 
-gulp.task('parseGrammar', function(){
-    fs.readFile('pegjs/sparql_query.grammar', 'utf8', function(err, grammar){
+gulp.task('parseGrammar', async function(){
+    await fs.readFile('pegjs/sparql_query.grammar', 'utf8', function(err, grammar){
         if(err) {
             throw err;
         } else {
@@ -57,5 +61,5 @@ gulp.task('parseGrammar', function(){
     });
 });
 
-gulp.task('default', ['parseGrammar', 'specs']);
-gulp.task('browser', ['parseGrammar','clean-dist','browserify','minimize']);
+gulp.task('default', gulp.parallel('parseGrammar', 'specs'));
+gulp.task('browser', gulp.parallel('parseGrammar', gulp.series('clean-dist','browserify','minimize')));
