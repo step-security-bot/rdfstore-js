@@ -418,21 +418,20 @@ Store.prototype.stopObservingQuery = function(query) {
 Store.prototype.subscribe = function(s, p, o, g, callback) {
     var that = this;
     var adapterCb = function(event,triples){
-	var acum = [];
-	var queryEnv = {blanks:{}, outCache:{}};
-	var bindings = [];
+		var acum = [];
+		var queryEnv = {blanks:{}, outCache:{}};
+		var bindings = [];
 
-	_.each(triples, function(triple){
-	    var s = RDFModel.buildRDFResource(triple.subject,bindings,that.engine,queryEnv);
-	    var p = RDFModel.buildRDFResource(triple.predicate,bindings,that.engine,queryEnv);
-	    var o = RDFModel.buildRDFResource(triple.object,bindings,that.engine,queryEnv);
-	    if(s!=null && p!=null && o!=null) {
-		triple = new RDFModel.Triple(s,p,o);
-		acum.push(triple);
-	    }
-	});
-
-	callback(event,acum);
+		_.each(triples, function(triple){
+	    	var s = RDFModel.buildRDFResource(triple.subject,bindings,that.engine,queryEnv);
+	    	var p = RDFModel.buildRDFResource(triple.predicate,bindings,that.engine,queryEnv);
+	    	var o = RDFModel.buildRDFResource(triple.object,bindings,that.engine,queryEnv);
+	    	if(s!=null && p!=null && o!=null) {
+				triple = new RDFModel.Triple(s,p,o);
+				acum.push(triple);
+			}
+		});
+		callback(event,acum);
     };
 
     this.functionMap[callback] = adapterCb;
