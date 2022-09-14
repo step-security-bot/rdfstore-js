@@ -186,1605 +186,6 @@ function fromByteArray (uint8) {
 },{}],4:[function(require,module,exports){
 arguments[4][3][0].apply(exports,arguments)
 },{"dup":3}],5:[function(require,module,exports){
-(function (global){(function (){
-/*! https://mths.be/punycode v1.4.1 by @mathias */
-;(function(root) {
-
-	/** Detect free variables */
-	var freeExports = typeof exports == 'object' && exports &&
-		!exports.nodeType && exports;
-	var freeModule = typeof module == 'object' && module &&
-		!module.nodeType && module;
-	var freeGlobal = typeof global == 'object' && global;
-	if (
-		freeGlobal.global === freeGlobal ||
-		freeGlobal.window === freeGlobal ||
-		freeGlobal.self === freeGlobal
-	) {
-		root = freeGlobal;
-	}
-
-	/**
-	 * The `punycode` object.
-	 * @name punycode
-	 * @type Object
-	 */
-	var punycode,
-
-	/** Highest positive signed 32-bit float value */
-	maxInt = 2147483647, // aka. 0x7FFFFFFF or 2^31-1
-
-	/** Bootstring parameters */
-	base = 36,
-	tMin = 1,
-	tMax = 26,
-	skew = 38,
-	damp = 700,
-	initialBias = 72,
-	initialN = 128, // 0x80
-	delimiter = '-', // '\x2D'
-
-	/** Regular expressions */
-	regexPunycode = /^xn--/,
-	regexNonASCII = /[^\x20-\x7E]/, // unprintable ASCII chars + non-ASCII chars
-	regexSeparators = /[\x2E\u3002\uFF0E\uFF61]/g, // RFC 3490 separators
-
-	/** Error messages */
-	errors = {
-		'overflow': 'Overflow: input needs wider integers to process',
-		'not-basic': 'Illegal input >= 0x80 (not a basic code point)',
-		'invalid-input': 'Invalid input'
-	},
-
-	/** Convenience shortcuts */
-	baseMinusTMin = base - tMin,
-	floor = Math.floor,
-	stringFromCharCode = String.fromCharCode,
-
-	/** Temporary variable */
-	key;
-
-	/*--------------------------------------------------------------------------*/
-
-	/**
-	 * A generic error utility function.
-	 * @private
-	 * @param {String} type The error type.
-	 * @returns {Error} Throws a `RangeError` with the applicable error message.
-	 */
-	function error(type) {
-		throw new RangeError(errors[type]);
-	}
-
-	/**
-	 * A generic `Array#map` utility function.
-	 * @private
-	 * @param {Array} array The array to iterate over.
-	 * @param {Function} callback The function that gets called for every array
-	 * item.
-	 * @returns {Array} A new array of values returned by the callback function.
-	 */
-	function map(array, fn) {
-		var length = array.length;
-		var result = [];
-		while (length--) {
-			result[length] = fn(array[length]);
-		}
-		return result;
-	}
-
-	/**
-	 * A simple `Array#map`-like wrapper to work with domain name strings or email
-	 * addresses.
-	 * @private
-	 * @param {String} domain The domain name or email address.
-	 * @param {Function} callback The function that gets called for every
-	 * character.
-	 * @returns {Array} A new string of characters returned by the callback
-	 * function.
-	 */
-	function mapDomain(string, fn) {
-		var parts = string.split('@');
-		var result = '';
-		if (parts.length > 1) {
-			// In email addresses, only the domain name should be punycoded. Leave
-			// the local part (i.e. everything up to `@`) intact.
-			result = parts[0] + '@';
-			string = parts[1];
-		}
-		// Avoid `split(regex)` for IE8 compatibility. See #17.
-		string = string.replace(regexSeparators, '\x2E');
-		var labels = string.split('.');
-		var encoded = map(labels, fn).join('.');
-		return result + encoded;
-	}
-
-	/**
-	 * Creates an array containing the numeric code points of each Unicode
-	 * character in the string. While JavaScript uses UCS-2 internally,
-	 * this function will convert a pair of surrogate halves (each of which
-	 * UCS-2 exposes as separate characters) into a single code point,
-	 * matching UTF-16.
-	 * @see `punycode.ucs2.encode`
-	 * @see <https://mathiasbynens.be/notes/javascript-encoding>
-	 * @memberOf punycode.ucs2
-	 * @name decode
-	 * @param {String} string The Unicode input string (UCS-2).
-	 * @returns {Array} The new array of code points.
-	 */
-	function ucs2decode(string) {
-		var output = [],
-		    counter = 0,
-		    length = string.length,
-		    value,
-		    extra;
-		while (counter < length) {
-			value = string.charCodeAt(counter++);
-			if (value >= 0xD800 && value <= 0xDBFF && counter < length) {
-				// high surrogate, and there is a next character
-				extra = string.charCodeAt(counter++);
-				if ((extra & 0xFC00) == 0xDC00) { // low surrogate
-					output.push(((value & 0x3FF) << 10) + (extra & 0x3FF) + 0x10000);
-				} else {
-					// unmatched surrogate; only append this code unit, in case the next
-					// code unit is the high surrogate of a surrogate pair
-					output.push(value);
-					counter--;
-				}
-			} else {
-				output.push(value);
-			}
-		}
-		return output;
-	}
-
-	/**
-	 * Creates a string based on an array of numeric code points.
-	 * @see `punycode.ucs2.decode`
-	 * @memberOf punycode.ucs2
-	 * @name encode
-	 * @param {Array} codePoints The array of numeric code points.
-	 * @returns {String} The new Unicode string (UCS-2).
-	 */
-	function ucs2encode(array) {
-		return map(array, function(value) {
-			var output = '';
-			if (value > 0xFFFF) {
-				value -= 0x10000;
-				output += stringFromCharCode(value >>> 10 & 0x3FF | 0xD800);
-				value = 0xDC00 | value & 0x3FF;
-			}
-			output += stringFromCharCode(value);
-			return output;
-		}).join('');
-	}
-
-	/**
-	 * Converts a basic code point into a digit/integer.
-	 * @see `digitToBasic()`
-	 * @private
-	 * @param {Number} codePoint The basic numeric code point value.
-	 * @returns {Number} The numeric value of a basic code point (for use in
-	 * representing integers) in the range `0` to `base - 1`, or `base` if
-	 * the code point does not represent a value.
-	 */
-	function basicToDigit(codePoint) {
-		if (codePoint - 48 < 10) {
-			return codePoint - 22;
-		}
-		if (codePoint - 65 < 26) {
-			return codePoint - 65;
-		}
-		if (codePoint - 97 < 26) {
-			return codePoint - 97;
-		}
-		return base;
-	}
-
-	/**
-	 * Converts a digit/integer into a basic code point.
-	 * @see `basicToDigit()`
-	 * @private
-	 * @param {Number} digit The numeric value of a basic code point.
-	 * @returns {Number} The basic code point whose value (when used for
-	 * representing integers) is `digit`, which needs to be in the range
-	 * `0` to `base - 1`. If `flag` is non-zero, the uppercase form is
-	 * used; else, the lowercase form is used. The behavior is undefined
-	 * if `flag` is non-zero and `digit` has no uppercase form.
-	 */
-	function digitToBasic(digit, flag) {
-		//  0..25 map to ASCII a..z or A..Z
-		// 26..35 map to ASCII 0..9
-		return digit + 22 + 75 * (digit < 26) - ((flag != 0) << 5);
-	}
-
-	/**
-	 * Bias adaptation function as per section 3.4 of RFC 3492.
-	 * https://tools.ietf.org/html/rfc3492#section-3.4
-	 * @private
-	 */
-	function adapt(delta, numPoints, firstTime) {
-		var k = 0;
-		delta = firstTime ? floor(delta / damp) : delta >> 1;
-		delta += floor(delta / numPoints);
-		for (/* no initialization */; delta > baseMinusTMin * tMax >> 1; k += base) {
-			delta = floor(delta / baseMinusTMin);
-		}
-		return floor(k + (baseMinusTMin + 1) * delta / (delta + skew));
-	}
-
-	/**
-	 * Converts a Punycode string of ASCII-only symbols to a string of Unicode
-	 * symbols.
-	 * @memberOf punycode
-	 * @param {String} input The Punycode string of ASCII-only symbols.
-	 * @returns {String} The resulting string of Unicode symbols.
-	 */
-	function decode(input) {
-		// Don't use UCS-2
-		var output = [],
-		    inputLength = input.length,
-		    out,
-		    i = 0,
-		    n = initialN,
-		    bias = initialBias,
-		    basic,
-		    j,
-		    index,
-		    oldi,
-		    w,
-		    k,
-		    digit,
-		    t,
-		    /** Cached calculation results */
-		    baseMinusT;
-
-		// Handle the basic code points: let `basic` be the number of input code
-		// points before the last delimiter, or `0` if there is none, then copy
-		// the first basic code points to the output.
-
-		basic = input.lastIndexOf(delimiter);
-		if (basic < 0) {
-			basic = 0;
-		}
-
-		for (j = 0; j < basic; ++j) {
-			// if it's not a basic code point
-			if (input.charCodeAt(j) >= 0x80) {
-				error('not-basic');
-			}
-			output.push(input.charCodeAt(j));
-		}
-
-		// Main decoding loop: start just after the last delimiter if any basic code
-		// points were copied; start at the beginning otherwise.
-
-		for (index = basic > 0 ? basic + 1 : 0; index < inputLength; /* no final expression */) {
-
-			// `index` is the index of the next character to be consumed.
-			// Decode a generalized variable-length integer into `delta`,
-			// which gets added to `i`. The overflow checking is easier
-			// if we increase `i` as we go, then subtract off its starting
-			// value at the end to obtain `delta`.
-			for (oldi = i, w = 1, k = base; /* no condition */; k += base) {
-
-				if (index >= inputLength) {
-					error('invalid-input');
-				}
-
-				digit = basicToDigit(input.charCodeAt(index++));
-
-				if (digit >= base || digit > floor((maxInt - i) / w)) {
-					error('overflow');
-				}
-
-				i += digit * w;
-				t = k <= bias ? tMin : (k >= bias + tMax ? tMax : k - bias);
-
-				if (digit < t) {
-					break;
-				}
-
-				baseMinusT = base - t;
-				if (w > floor(maxInt / baseMinusT)) {
-					error('overflow');
-				}
-
-				w *= baseMinusT;
-
-			}
-
-			out = output.length + 1;
-			bias = adapt(i - oldi, out, oldi == 0);
-
-			// `i` was supposed to wrap around from `out` to `0`,
-			// incrementing `n` each time, so we'll fix that now:
-			if (floor(i / out) > maxInt - n) {
-				error('overflow');
-			}
-
-			n += floor(i / out);
-			i %= out;
-
-			// Insert `n` at position `i` of the output
-			output.splice(i++, 0, n);
-
-		}
-
-		return ucs2encode(output);
-	}
-
-	/**
-	 * Converts a string of Unicode symbols (e.g. a domain name label) to a
-	 * Punycode string of ASCII-only symbols.
-	 * @memberOf punycode
-	 * @param {String} input The string of Unicode symbols.
-	 * @returns {String} The resulting Punycode string of ASCII-only symbols.
-	 */
-	function encode(input) {
-		var n,
-		    delta,
-		    handledCPCount,
-		    basicLength,
-		    bias,
-		    j,
-		    m,
-		    q,
-		    k,
-		    t,
-		    currentValue,
-		    output = [],
-		    /** `inputLength` will hold the number of code points in `input`. */
-		    inputLength,
-		    /** Cached calculation results */
-		    handledCPCountPlusOne,
-		    baseMinusT,
-		    qMinusT;
-
-		// Convert the input in UCS-2 to Unicode
-		input = ucs2decode(input);
-
-		// Cache the length
-		inputLength = input.length;
-
-		// Initialize the state
-		n = initialN;
-		delta = 0;
-		bias = initialBias;
-
-		// Handle the basic code points
-		for (j = 0; j < inputLength; ++j) {
-			currentValue = input[j];
-			if (currentValue < 0x80) {
-				output.push(stringFromCharCode(currentValue));
-			}
-		}
-
-		handledCPCount = basicLength = output.length;
-
-		// `handledCPCount` is the number of code points that have been handled;
-		// `basicLength` is the number of basic code points.
-
-		// Finish the basic string - if it is not empty - with a delimiter
-		if (basicLength) {
-			output.push(delimiter);
-		}
-
-		// Main encoding loop:
-		while (handledCPCount < inputLength) {
-
-			// All non-basic code points < n have been handled already. Find the next
-			// larger one:
-			for (m = maxInt, j = 0; j < inputLength; ++j) {
-				currentValue = input[j];
-				if (currentValue >= n && currentValue < m) {
-					m = currentValue;
-				}
-			}
-
-			// Increase `delta` enough to advance the decoder's <n,i> state to <m,0>,
-			// but guard against overflow
-			handledCPCountPlusOne = handledCPCount + 1;
-			if (m - n > floor((maxInt - delta) / handledCPCountPlusOne)) {
-				error('overflow');
-			}
-
-			delta += (m - n) * handledCPCountPlusOne;
-			n = m;
-
-			for (j = 0; j < inputLength; ++j) {
-				currentValue = input[j];
-
-				if (currentValue < n && ++delta > maxInt) {
-					error('overflow');
-				}
-
-				if (currentValue == n) {
-					// Represent delta as a generalized variable-length integer
-					for (q = delta, k = base; /* no condition */; k += base) {
-						t = k <= bias ? tMin : (k >= bias + tMax ? tMax : k - bias);
-						if (q < t) {
-							break;
-						}
-						qMinusT = q - t;
-						baseMinusT = base - t;
-						output.push(
-							stringFromCharCode(digitToBasic(t + qMinusT % baseMinusT, 0))
-						);
-						q = floor(qMinusT / baseMinusT);
-					}
-
-					output.push(stringFromCharCode(digitToBasic(q, 0)));
-					bias = adapt(delta, handledCPCountPlusOne, handledCPCount == basicLength);
-					delta = 0;
-					++handledCPCount;
-				}
-			}
-
-			++delta;
-			++n;
-
-		}
-		return output.join('');
-	}
-
-	/**
-	 * Converts a Punycode string representing a domain name or an email address
-	 * to Unicode. Only the Punycoded parts of the input will be converted, i.e.
-	 * it doesn't matter if you call it on a string that has already been
-	 * converted to Unicode.
-	 * @memberOf punycode
-	 * @param {String} input The Punycoded domain name or email address to
-	 * convert to Unicode.
-	 * @returns {String} The Unicode representation of the given Punycode
-	 * string.
-	 */
-	function toUnicode(input) {
-		return mapDomain(input, function(string) {
-			return regexPunycode.test(string)
-				? decode(string.slice(4).toLowerCase())
-				: string;
-		});
-	}
-
-	/**
-	 * Converts a Unicode string representing a domain name or an email address to
-	 * Punycode. Only the non-ASCII parts of the domain name will be converted,
-	 * i.e. it doesn't matter if you call it with a domain that's already in
-	 * ASCII.
-	 * @memberOf punycode
-	 * @param {String} input The domain name or email address to convert, as a
-	 * Unicode string.
-	 * @returns {String} The Punycode representation of the given domain name or
-	 * email address.
-	 */
-	function toASCII(input) {
-		return mapDomain(input, function(string) {
-			return regexNonASCII.test(string)
-				? 'xn--' + encode(string)
-				: string;
-		});
-	}
-
-	/*--------------------------------------------------------------------------*/
-
-	/** Define the public API */
-	punycode = {
-		/**
-		 * A string representing the current Punycode.js version number.
-		 * @memberOf punycode
-		 * @type String
-		 */
-		'version': '1.4.1',
-		/**
-		 * An object of methods to convert from JavaScript's internal character
-		 * representation (UCS-2) to Unicode code points, and back.
-		 * @see <https://mathiasbynens.be/notes/javascript-encoding>
-		 * @memberOf punycode
-		 * @type Object
-		 */
-		'ucs2': {
-			'decode': ucs2decode,
-			'encode': ucs2encode
-		},
-		'decode': decode,
-		'encode': encode,
-		'toASCII': toASCII,
-		'toUnicode': toUnicode
-	};
-
-	/** Expose `punycode` */
-	// Some AMD build optimizers, like r.js, check for specific condition patterns
-	// like the following:
-	if (
-		typeof define == 'function' &&
-		typeof define.amd == 'object' &&
-		define.amd
-	) {
-		define('punycode', function() {
-			return punycode;
-		});
-	} else if (freeExports && freeModule) {
-		if (module.exports == freeExports) {
-			// in Node.js, io.js, or RingoJS v0.8.0+
-			freeModule.exports = punycode;
-		} else {
-			// in Narwhal or RingoJS v0.7.0-
-			for (key in punycode) {
-				punycode.hasOwnProperty(key) && (freeExports[key] = punycode[key]);
-			}
-		}
-	} else {
-		// in Rhino or a web browser
-		root.punycode = punycode;
-	}
-
-}(this));
-
-}).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],6:[function(require,module,exports){
-module.exports = function isBuffer(arg) {
-  return arg && typeof arg === 'object'
-    && typeof arg.copy === 'function'
-    && typeof arg.fill === 'function'
-    && typeof arg.readUInt8 === 'function';
-}
-},{}],7:[function(require,module,exports){
-// Currently in sync with Node.js lib/internal/util/types.js
-// https://github.com/nodejs/node/commit/112cc7c27551254aa2b17098fb774867f05ed0d9
-
-'use strict';
-
-var isArgumentsObject = require('is-arguments');
-var isGeneratorFunction = require('is-generator-function');
-var whichTypedArray = require('which-typed-array');
-var isTypedArray = require('is-typed-array');
-
-function uncurryThis(f) {
-  return f.call.bind(f);
-}
-
-var BigIntSupported = typeof BigInt !== 'undefined';
-var SymbolSupported = typeof Symbol !== 'undefined';
-
-var ObjectToString = uncurryThis(Object.prototype.toString);
-
-var numberValue = uncurryThis(Number.prototype.valueOf);
-var stringValue = uncurryThis(String.prototype.valueOf);
-var booleanValue = uncurryThis(Boolean.prototype.valueOf);
-
-if (BigIntSupported) {
-  var bigIntValue = uncurryThis(BigInt.prototype.valueOf);
-}
-
-if (SymbolSupported) {
-  var symbolValue = uncurryThis(Symbol.prototype.valueOf);
-}
-
-function checkBoxedPrimitive(value, prototypeValueOf) {
-  if (typeof value !== 'object') {
-    return false;
-  }
-  try {
-    prototypeValueOf(value);
-    return true;
-  } catch(e) {
-    return false;
-  }
-}
-
-exports.isArgumentsObject = isArgumentsObject;
-exports.isGeneratorFunction = isGeneratorFunction;
-exports.isTypedArray = isTypedArray;
-
-// Taken from here and modified for better browser support
-// https://github.com/sindresorhus/p-is-promise/blob/cda35a513bda03f977ad5cde3a079d237e82d7ef/index.js
-function isPromise(input) {
-	return (
-		(
-			typeof Promise !== 'undefined' &&
-			input instanceof Promise
-		) ||
-		(
-			input !== null &&
-			typeof input === 'object' &&
-			typeof input.then === 'function' &&
-			typeof input.catch === 'function'
-		)
-	);
-}
-exports.isPromise = isPromise;
-
-function isArrayBufferView(value) {
-  if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView) {
-    return ArrayBuffer.isView(value);
-  }
-
-  return (
-    isTypedArray(value) ||
-    isDataView(value)
-  );
-}
-exports.isArrayBufferView = isArrayBufferView;
-
-
-function isUint8Array(value) {
-  return whichTypedArray(value) === 'Uint8Array';
-}
-exports.isUint8Array = isUint8Array;
-
-function isUint8ClampedArray(value) {
-  return whichTypedArray(value) === 'Uint8ClampedArray';
-}
-exports.isUint8ClampedArray = isUint8ClampedArray;
-
-function isUint16Array(value) {
-  return whichTypedArray(value) === 'Uint16Array';
-}
-exports.isUint16Array = isUint16Array;
-
-function isUint32Array(value) {
-  return whichTypedArray(value) === 'Uint32Array';
-}
-exports.isUint32Array = isUint32Array;
-
-function isInt8Array(value) {
-  return whichTypedArray(value) === 'Int8Array';
-}
-exports.isInt8Array = isInt8Array;
-
-function isInt16Array(value) {
-  return whichTypedArray(value) === 'Int16Array';
-}
-exports.isInt16Array = isInt16Array;
-
-function isInt32Array(value) {
-  return whichTypedArray(value) === 'Int32Array';
-}
-exports.isInt32Array = isInt32Array;
-
-function isFloat32Array(value) {
-  return whichTypedArray(value) === 'Float32Array';
-}
-exports.isFloat32Array = isFloat32Array;
-
-function isFloat64Array(value) {
-  return whichTypedArray(value) === 'Float64Array';
-}
-exports.isFloat64Array = isFloat64Array;
-
-function isBigInt64Array(value) {
-  return whichTypedArray(value) === 'BigInt64Array';
-}
-exports.isBigInt64Array = isBigInt64Array;
-
-function isBigUint64Array(value) {
-  return whichTypedArray(value) === 'BigUint64Array';
-}
-exports.isBigUint64Array = isBigUint64Array;
-
-function isMapToString(value) {
-  return ObjectToString(value) === '[object Map]';
-}
-isMapToString.working = (
-  typeof Map !== 'undefined' &&
-  isMapToString(new Map())
-);
-
-function isMap(value) {
-  if (typeof Map === 'undefined') {
-    return false;
-  }
-
-  return isMapToString.working
-    ? isMapToString(value)
-    : value instanceof Map;
-}
-exports.isMap = isMap;
-
-function isSetToString(value) {
-  return ObjectToString(value) === '[object Set]';
-}
-isSetToString.working = (
-  typeof Set !== 'undefined' &&
-  isSetToString(new Set())
-);
-function isSet(value) {
-  if (typeof Set === 'undefined') {
-    return false;
-  }
-
-  return isSetToString.working
-    ? isSetToString(value)
-    : value instanceof Set;
-}
-exports.isSet = isSet;
-
-function isWeakMapToString(value) {
-  return ObjectToString(value) === '[object WeakMap]';
-}
-isWeakMapToString.working = (
-  typeof WeakMap !== 'undefined' &&
-  isWeakMapToString(new WeakMap())
-);
-function isWeakMap(value) {
-  if (typeof WeakMap === 'undefined') {
-    return false;
-  }
-
-  return isWeakMapToString.working
-    ? isWeakMapToString(value)
-    : value instanceof WeakMap;
-}
-exports.isWeakMap = isWeakMap;
-
-function isWeakSetToString(value) {
-  return ObjectToString(value) === '[object WeakSet]';
-}
-isWeakSetToString.working = (
-  typeof WeakSet !== 'undefined' &&
-  isWeakSetToString(new WeakSet())
-);
-function isWeakSet(value) {
-  return isWeakSetToString(value);
-}
-exports.isWeakSet = isWeakSet;
-
-function isArrayBufferToString(value) {
-  return ObjectToString(value) === '[object ArrayBuffer]';
-}
-isArrayBufferToString.working = (
-  typeof ArrayBuffer !== 'undefined' &&
-  isArrayBufferToString(new ArrayBuffer())
-);
-function isArrayBuffer(value) {
-  if (typeof ArrayBuffer === 'undefined') {
-    return false;
-  }
-
-  return isArrayBufferToString.working
-    ? isArrayBufferToString(value)
-    : value instanceof ArrayBuffer;
-}
-exports.isArrayBuffer = isArrayBuffer;
-
-function isDataViewToString(value) {
-  return ObjectToString(value) === '[object DataView]';
-}
-isDataViewToString.working = (
-  typeof ArrayBuffer !== 'undefined' &&
-  typeof DataView !== 'undefined' &&
-  isDataViewToString(new DataView(new ArrayBuffer(1), 0, 1))
-);
-function isDataView(value) {
-  if (typeof DataView === 'undefined') {
-    return false;
-  }
-
-  return isDataViewToString.working
-    ? isDataViewToString(value)
-    : value instanceof DataView;
-}
-exports.isDataView = isDataView;
-
-// Store a copy of SharedArrayBuffer in case it's deleted elsewhere
-var SharedArrayBufferCopy = typeof SharedArrayBuffer !== 'undefined' ? SharedArrayBuffer : undefined;
-function isSharedArrayBufferToString(value) {
-  return ObjectToString(value) === '[object SharedArrayBuffer]';
-}
-function isSharedArrayBuffer(value) {
-  if (typeof SharedArrayBufferCopy === 'undefined') {
-    return false;
-  }
-
-  if (typeof isSharedArrayBufferToString.working === 'undefined') {
-    isSharedArrayBufferToString.working = isSharedArrayBufferToString(new SharedArrayBufferCopy());
-  }
-
-  return isSharedArrayBufferToString.working
-    ? isSharedArrayBufferToString(value)
-    : value instanceof SharedArrayBufferCopy;
-}
-exports.isSharedArrayBuffer = isSharedArrayBuffer;
-
-function isAsyncFunction(value) {
-  return ObjectToString(value) === '[object AsyncFunction]';
-}
-exports.isAsyncFunction = isAsyncFunction;
-
-function isMapIterator(value) {
-  return ObjectToString(value) === '[object Map Iterator]';
-}
-exports.isMapIterator = isMapIterator;
-
-function isSetIterator(value) {
-  return ObjectToString(value) === '[object Set Iterator]';
-}
-exports.isSetIterator = isSetIterator;
-
-function isGeneratorObject(value) {
-  return ObjectToString(value) === '[object Generator]';
-}
-exports.isGeneratorObject = isGeneratorObject;
-
-function isWebAssemblyCompiledModule(value) {
-  return ObjectToString(value) === '[object WebAssembly.Module]';
-}
-exports.isWebAssemblyCompiledModule = isWebAssemblyCompiledModule;
-
-function isNumberObject(value) {
-  return checkBoxedPrimitive(value, numberValue);
-}
-exports.isNumberObject = isNumberObject;
-
-function isStringObject(value) {
-  return checkBoxedPrimitive(value, stringValue);
-}
-exports.isStringObject = isStringObject;
-
-function isBooleanObject(value) {
-  return checkBoxedPrimitive(value, booleanValue);
-}
-exports.isBooleanObject = isBooleanObject;
-
-function isBigIntObject(value) {
-  return BigIntSupported && checkBoxedPrimitive(value, bigIntValue);
-}
-exports.isBigIntObject = isBigIntObject;
-
-function isSymbolObject(value) {
-  return SymbolSupported && checkBoxedPrimitive(value, symbolValue);
-}
-exports.isSymbolObject = isSymbolObject;
-
-function isBoxedPrimitive(value) {
-  return (
-    isNumberObject(value) ||
-    isStringObject(value) ||
-    isBooleanObject(value) ||
-    isBigIntObject(value) ||
-    isSymbolObject(value)
-  );
-}
-exports.isBoxedPrimitive = isBoxedPrimitive;
-
-function isAnyArrayBuffer(value) {
-  return typeof Uint8Array !== 'undefined' && (
-    isArrayBuffer(value) ||
-    isSharedArrayBuffer(value)
-  );
-}
-exports.isAnyArrayBuffer = isAnyArrayBuffer;
-
-['isProxy', 'isExternal', 'isModuleNamespaceObject'].forEach(function(method) {
-  Object.defineProperty(exports, method, {
-    enumerable: false,
-    value: function() {
-      throw new Error(method + ' is not supported in userland');
-    }
-  });
-});
-
-},{"is-arguments":27,"is-generator-function":29,"is-typed-array":30,"which-typed-array":118}],8:[function(require,module,exports){
-(function (process){(function (){
-// Copyright Joyent, Inc. and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-var getOwnPropertyDescriptors = Object.getOwnPropertyDescriptors ||
-  function getOwnPropertyDescriptors(obj) {
-    var keys = Object.keys(obj);
-    var descriptors = {};
-    for (var i = 0; i < keys.length; i++) {
-      descriptors[keys[i]] = Object.getOwnPropertyDescriptor(obj, keys[i]);
-    }
-    return descriptors;
-  };
-
-var formatRegExp = /%[sdj%]/g;
-exports.format = function(f) {
-  if (!isString(f)) {
-    var objects = [];
-    for (var i = 0; i < arguments.length; i++) {
-      objects.push(inspect(arguments[i]));
-    }
-    return objects.join(' ');
-  }
-
-  var i = 1;
-  var args = arguments;
-  var len = args.length;
-  var str = String(f).replace(formatRegExp, function(x) {
-    if (x === '%%') return '%';
-    if (i >= len) return x;
-    switch (x) {
-      case '%s': return String(args[i++]);
-      case '%d': return Number(args[i++]);
-      case '%j':
-        try {
-          return JSON.stringify(args[i++]);
-        } catch (_) {
-          return '[Circular]';
-        }
-      default:
-        return x;
-    }
-  });
-  for (var x = args[i]; i < len; x = args[++i]) {
-    if (isNull(x) || !isObject(x)) {
-      str += ' ' + x;
-    } else {
-      str += ' ' + inspect(x);
-    }
-  }
-  return str;
-};
-
-
-// Mark that a method should not be used.
-// Returns a modified function which warns once by default.
-// If --no-deprecation is set, then it is a no-op.
-exports.deprecate = function(fn, msg) {
-  if (typeof process !== 'undefined' && process.noDeprecation === true) {
-    return fn;
-  }
-
-  // Allow for deprecating things in the process of starting up.
-  if (typeof process === 'undefined') {
-    return function() {
-      return exports.deprecate(fn, msg).apply(this, arguments);
-    };
-  }
-
-  var warned = false;
-  function deprecated() {
-    if (!warned) {
-      if (process.throwDeprecation) {
-        throw new Error(msg);
-      } else if (process.traceDeprecation) {
-        console.trace(msg);
-      } else {
-        console.error(msg);
-      }
-      warned = true;
-    }
-    return fn.apply(this, arguments);
-  }
-
-  return deprecated;
-};
-
-
-var debugs = {};
-var debugEnvRegex = /^$/;
-
-if (process.env.NODE_DEBUG) {
-  var debugEnv = process.env.NODE_DEBUG;
-  debugEnv = debugEnv.replace(/[|\\{}()[\]^$+?.]/g, '\\$&')
-    .replace(/\*/g, '.*')
-    .replace(/,/g, '$|^')
-    .toUpperCase();
-  debugEnvRegex = new RegExp('^' + debugEnv + '$', 'i');
-}
-exports.debuglog = function(set) {
-  set = set.toUpperCase();
-  if (!debugs[set]) {
-    if (debugEnvRegex.test(set)) {
-      var pid = process.pid;
-      debugs[set] = function() {
-        var msg = exports.format.apply(exports, arguments);
-        console.error('%s %d: %s', set, pid, msg);
-      };
-    } else {
-      debugs[set] = function() {};
-    }
-  }
-  return debugs[set];
-};
-
-
-/**
- * Echos the value of a value. Trys to print the value out
- * in the best way possible given the different types.
- *
- * @param {Object} obj The object to print out.
- * @param {Object} opts Optional options object that alters the output.
- */
-/* legacy: obj, showHidden, depth, colors*/
-function inspect(obj, opts) {
-  // default options
-  var ctx = {
-    seen: [],
-    stylize: stylizeNoColor
-  };
-  // legacy...
-  if (arguments.length >= 3) ctx.depth = arguments[2];
-  if (arguments.length >= 4) ctx.colors = arguments[3];
-  if (isBoolean(opts)) {
-    // legacy...
-    ctx.showHidden = opts;
-  } else if (opts) {
-    // got an "options" object
-    exports._extend(ctx, opts);
-  }
-  // set default options
-  if (isUndefined(ctx.showHidden)) ctx.showHidden = false;
-  if (isUndefined(ctx.depth)) ctx.depth = 2;
-  if (isUndefined(ctx.colors)) ctx.colors = false;
-  if (isUndefined(ctx.customInspect)) ctx.customInspect = true;
-  if (ctx.colors) ctx.stylize = stylizeWithColor;
-  return formatValue(ctx, obj, ctx.depth);
-}
-exports.inspect = inspect;
-
-
-// http://en.wikipedia.org/wiki/ANSI_escape_code#graphics
-inspect.colors = {
-  'bold' : [1, 22],
-  'italic' : [3, 23],
-  'underline' : [4, 24],
-  'inverse' : [7, 27],
-  'white' : [37, 39],
-  'grey' : [90, 39],
-  'black' : [30, 39],
-  'blue' : [34, 39],
-  'cyan' : [36, 39],
-  'green' : [32, 39],
-  'magenta' : [35, 39],
-  'red' : [31, 39],
-  'yellow' : [33, 39]
-};
-
-// Don't use 'blue' not visible on cmd.exe
-inspect.styles = {
-  'special': 'cyan',
-  'number': 'yellow',
-  'boolean': 'yellow',
-  'undefined': 'grey',
-  'null': 'bold',
-  'string': 'green',
-  'date': 'magenta',
-  // "name": intentionally not styling
-  'regexp': 'red'
-};
-
-
-function stylizeWithColor(str, styleType) {
-  var style = inspect.styles[styleType];
-
-  if (style) {
-    return '\u001b[' + inspect.colors[style][0] + 'm' + str +
-           '\u001b[' + inspect.colors[style][1] + 'm';
-  } else {
-    return str;
-  }
-}
-
-
-function stylizeNoColor(str, styleType) {
-  return str;
-}
-
-
-function arrayToHash(array) {
-  var hash = {};
-
-  array.forEach(function(val, idx) {
-    hash[val] = true;
-  });
-
-  return hash;
-}
-
-
-function formatValue(ctx, value, recurseTimes) {
-  // Provide a hook for user-specified inspect functions.
-  // Check that value is an object with an inspect function on it
-  if (ctx.customInspect &&
-      value &&
-      isFunction(value.inspect) &&
-      // Filter out the util module, it's inspect function is special
-      value.inspect !== exports.inspect &&
-      // Also filter out any prototype objects using the circular check.
-      !(value.constructor && value.constructor.prototype === value)) {
-    var ret = value.inspect(recurseTimes, ctx);
-    if (!isString(ret)) {
-      ret = formatValue(ctx, ret, recurseTimes);
-    }
-    return ret;
-  }
-
-  // Primitive types cannot have properties
-  var primitive = formatPrimitive(ctx, value);
-  if (primitive) {
-    return primitive;
-  }
-
-  // Look up the keys of the object.
-  var keys = Object.keys(value);
-  var visibleKeys = arrayToHash(keys);
-
-  if (ctx.showHidden) {
-    keys = Object.getOwnPropertyNames(value);
-  }
-
-  // IE doesn't make error fields non-enumerable
-  // http://msdn.microsoft.com/en-us/library/ie/dww52sbt(v=vs.94).aspx
-  if (isError(value)
-      && (keys.indexOf('message') >= 0 || keys.indexOf('description') >= 0)) {
-    return formatError(value);
-  }
-
-  // Some type of object without properties can be shortcutted.
-  if (keys.length === 0) {
-    if (isFunction(value)) {
-      var name = value.name ? ': ' + value.name : '';
-      return ctx.stylize('[Function' + name + ']', 'special');
-    }
-    if (isRegExp(value)) {
-      return ctx.stylize(RegExp.prototype.toString.call(value), 'regexp');
-    }
-    if (isDate(value)) {
-      return ctx.stylize(Date.prototype.toString.call(value), 'date');
-    }
-    if (isError(value)) {
-      return formatError(value);
-    }
-  }
-
-  var base = '', array = false, braces = ['{', '}'];
-
-  // Make Array say that they are Array
-  if (isArray(value)) {
-    array = true;
-    braces = ['[', ']'];
-  }
-
-  // Make functions say that they are functions
-  if (isFunction(value)) {
-    var n = value.name ? ': ' + value.name : '';
-    base = ' [Function' + n + ']';
-  }
-
-  // Make RegExps say that they are RegExps
-  if (isRegExp(value)) {
-    base = ' ' + RegExp.prototype.toString.call(value);
-  }
-
-  // Make dates with properties first say the date
-  if (isDate(value)) {
-    base = ' ' + Date.prototype.toUTCString.call(value);
-  }
-
-  // Make error with message first say the error
-  if (isError(value)) {
-    base = ' ' + formatError(value);
-  }
-
-  if (keys.length === 0 && (!array || value.length == 0)) {
-    return braces[0] + base + braces[1];
-  }
-
-  if (recurseTimes < 0) {
-    if (isRegExp(value)) {
-      return ctx.stylize(RegExp.prototype.toString.call(value), 'regexp');
-    } else {
-      return ctx.stylize('[Object]', 'special');
-    }
-  }
-
-  ctx.seen.push(value);
-
-  var output;
-  if (array) {
-    output = formatArray(ctx, value, recurseTimes, visibleKeys, keys);
-  } else {
-    output = keys.map(function(key) {
-      return formatProperty(ctx, value, recurseTimes, visibleKeys, key, array);
-    });
-  }
-
-  ctx.seen.pop();
-
-  return reduceToSingleString(output, base, braces);
-}
-
-
-function formatPrimitive(ctx, value) {
-  if (isUndefined(value))
-    return ctx.stylize('undefined', 'undefined');
-  if (isString(value)) {
-    var simple = '\'' + JSON.stringify(value).replace(/^"|"$/g, '')
-                                             .replace(/'/g, "\\'")
-                                             .replace(/\\"/g, '"') + '\'';
-    return ctx.stylize(simple, 'string');
-  }
-  if (isNumber(value))
-    return ctx.stylize('' + value, 'number');
-  if (isBoolean(value))
-    return ctx.stylize('' + value, 'boolean');
-  // For some reason typeof null is "object", so special case here.
-  if (isNull(value))
-    return ctx.stylize('null', 'null');
-}
-
-
-function formatError(value) {
-  return '[' + Error.prototype.toString.call(value) + ']';
-}
-
-
-function formatArray(ctx, value, recurseTimes, visibleKeys, keys) {
-  var output = [];
-  for (var i = 0, l = value.length; i < l; ++i) {
-    if (hasOwnProperty(value, String(i))) {
-      output.push(formatProperty(ctx, value, recurseTimes, visibleKeys,
-          String(i), true));
-    } else {
-      output.push('');
-    }
-  }
-  keys.forEach(function(key) {
-    if (!key.match(/^\d+$/)) {
-      output.push(formatProperty(ctx, value, recurseTimes, visibleKeys,
-          key, true));
-    }
-  });
-  return output;
-}
-
-
-function formatProperty(ctx, value, recurseTimes, visibleKeys, key, array) {
-  var name, str, desc;
-  desc = Object.getOwnPropertyDescriptor(value, key) || { value: value[key] };
-  if (desc.get) {
-    if (desc.set) {
-      str = ctx.stylize('[Getter/Setter]', 'special');
-    } else {
-      str = ctx.stylize('[Getter]', 'special');
-    }
-  } else {
-    if (desc.set) {
-      str = ctx.stylize('[Setter]', 'special');
-    }
-  }
-  if (!hasOwnProperty(visibleKeys, key)) {
-    name = '[' + key + ']';
-  }
-  if (!str) {
-    if (ctx.seen.indexOf(desc.value) < 0) {
-      if (isNull(recurseTimes)) {
-        str = formatValue(ctx, desc.value, null);
-      } else {
-        str = formatValue(ctx, desc.value, recurseTimes - 1);
-      }
-      if (str.indexOf('\n') > -1) {
-        if (array) {
-          str = str.split('\n').map(function(line) {
-            return '  ' + line;
-          }).join('\n').substr(2);
-        } else {
-          str = '\n' + str.split('\n').map(function(line) {
-            return '   ' + line;
-          }).join('\n');
-        }
-      }
-    } else {
-      str = ctx.stylize('[Circular]', 'special');
-    }
-  }
-  if (isUndefined(name)) {
-    if (array && key.match(/^\d+$/)) {
-      return str;
-    }
-    name = JSON.stringify('' + key);
-    if (name.match(/^"([a-zA-Z_][a-zA-Z_0-9]*)"$/)) {
-      name = name.substr(1, name.length - 2);
-      name = ctx.stylize(name, 'name');
-    } else {
-      name = name.replace(/'/g, "\\'")
-                 .replace(/\\"/g, '"')
-                 .replace(/(^"|"$)/g, "'");
-      name = ctx.stylize(name, 'string');
-    }
-  }
-
-  return name + ': ' + str;
-}
-
-
-function reduceToSingleString(output, base, braces) {
-  var numLinesEst = 0;
-  var length = output.reduce(function(prev, cur) {
-    numLinesEst++;
-    if (cur.indexOf('\n') >= 0) numLinesEst++;
-    return prev + cur.replace(/\u001b\[\d\d?m/g, '').length + 1;
-  }, 0);
-
-  if (length > 60) {
-    return braces[0] +
-           (base === '' ? '' : base + '\n ') +
-           ' ' +
-           output.join(',\n  ') +
-           ' ' +
-           braces[1];
-  }
-
-  return braces[0] + base + ' ' + output.join(', ') + ' ' + braces[1];
-}
-
-
-// NOTE: These type checking functions intentionally don't use `instanceof`
-// because it is fragile and can be easily faked with `Object.create()`.
-exports.types = require('./support/types');
-
-function isArray(ar) {
-  return Array.isArray(ar);
-}
-exports.isArray = isArray;
-
-function isBoolean(arg) {
-  return typeof arg === 'boolean';
-}
-exports.isBoolean = isBoolean;
-
-function isNull(arg) {
-  return arg === null;
-}
-exports.isNull = isNull;
-
-function isNullOrUndefined(arg) {
-  return arg == null;
-}
-exports.isNullOrUndefined = isNullOrUndefined;
-
-function isNumber(arg) {
-  return typeof arg === 'number';
-}
-exports.isNumber = isNumber;
-
-function isString(arg) {
-  return typeof arg === 'string';
-}
-exports.isString = isString;
-
-function isSymbol(arg) {
-  return typeof arg === 'symbol';
-}
-exports.isSymbol = isSymbol;
-
-function isUndefined(arg) {
-  return arg === void 0;
-}
-exports.isUndefined = isUndefined;
-
-function isRegExp(re) {
-  return isObject(re) && objectToString(re) === '[object RegExp]';
-}
-exports.isRegExp = isRegExp;
-exports.types.isRegExp = isRegExp;
-
-function isObject(arg) {
-  return typeof arg === 'object' && arg !== null;
-}
-exports.isObject = isObject;
-
-function isDate(d) {
-  return isObject(d) && objectToString(d) === '[object Date]';
-}
-exports.isDate = isDate;
-exports.types.isDate = isDate;
-
-function isError(e) {
-  return isObject(e) &&
-      (objectToString(e) === '[object Error]' || e instanceof Error);
-}
-exports.isError = isError;
-exports.types.isNativeError = isError;
-
-function isFunction(arg) {
-  return typeof arg === 'function';
-}
-exports.isFunction = isFunction;
-
-function isPrimitive(arg) {
-  return arg === null ||
-         typeof arg === 'boolean' ||
-         typeof arg === 'number' ||
-         typeof arg === 'string' ||
-         typeof arg === 'symbol' ||  // ES6 symbol
-         typeof arg === 'undefined';
-}
-exports.isPrimitive = isPrimitive;
-
-exports.isBuffer = require('./support/isBuffer');
-
-function objectToString(o) {
-  return Object.prototype.toString.call(o);
-}
-
-
-function pad(n) {
-  return n < 10 ? '0' + n.toString(10) : n.toString(10);
-}
-
-
-var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep',
-              'Oct', 'Nov', 'Dec'];
-
-// 26 Feb 16:19:34
-function timestamp() {
-  var d = new Date();
-  var time = [pad(d.getHours()),
-              pad(d.getMinutes()),
-              pad(d.getSeconds())].join(':');
-  return [d.getDate(), months[d.getMonth()], time].join(' ');
-}
-
-
-// log is just a thin wrapper to console.log that prepends a timestamp
-exports.log = function() {
-  console.log('%s - %s', timestamp(), exports.format.apply(exports, arguments));
-};
-
-
-/**
- * Inherit the prototype methods from one constructor into another.
- *
- * The Function.prototype.inherits from lang.js rewritten as a standalone
- * function (not on Function.prototype). NOTE: If this file is to be loaded
- * during bootstrapping this function needs to be rewritten using some native
- * functions as prototype setup using normal JavaScript does not work as
- * expected during bootstrapping (see mirror.js in r114903).
- *
- * @param {function} ctor Constructor function which needs to inherit the
- *     prototype.
- * @param {function} superCtor Constructor function to inherit prototype from.
- */
-exports.inherits = require('inherits');
-
-exports._extend = function(origin, add) {
-  // Don't do anything if add isn't an object
-  if (!add || !isObject(add)) return origin;
-
-  var keys = Object.keys(add);
-  var i = keys.length;
-  while (i--) {
-    origin[keys[i]] = add[keys[i]];
-  }
-  return origin;
-};
-
-function hasOwnProperty(obj, prop) {
-  return Object.prototype.hasOwnProperty.call(obj, prop);
-}
-
-var kCustomPromisifiedSymbol = typeof Symbol !== 'undefined' ? Symbol('util.promisify.custom') : undefined;
-
-exports.promisify = function promisify(original) {
-  if (typeof original !== 'function')
-    throw new TypeError('The "original" argument must be of type Function');
-
-  if (kCustomPromisifiedSymbol && original[kCustomPromisifiedSymbol]) {
-    var fn = original[kCustomPromisifiedSymbol];
-    if (typeof fn !== 'function') {
-      throw new TypeError('The "util.promisify.custom" argument must be of type Function');
-    }
-    Object.defineProperty(fn, kCustomPromisifiedSymbol, {
-      value: fn, enumerable: false, writable: false, configurable: true
-    });
-    return fn;
-  }
-
-  function fn() {
-    var promiseResolve, promiseReject;
-    var promise = new Promise(function (resolve, reject) {
-      promiseResolve = resolve;
-      promiseReject = reject;
-    });
-
-    var args = [];
-    for (var i = 0; i < arguments.length; i++) {
-      args.push(arguments[i]);
-    }
-    args.push(function (err, value) {
-      if (err) {
-        promiseReject(err);
-      } else {
-        promiseResolve(value);
-      }
-    });
-
-    try {
-      original.apply(this, args);
-    } catch (err) {
-      promiseReject(err);
-    }
-
-    return promise;
-  }
-
-  Object.setPrototypeOf(fn, Object.getPrototypeOf(original));
-
-  if (kCustomPromisifiedSymbol) Object.defineProperty(fn, kCustomPromisifiedSymbol, {
-    value: fn, enumerable: false, writable: false, configurable: true
-  });
-  return Object.defineProperties(
-    fn,
-    getOwnPropertyDescriptors(original)
-  );
-}
-
-exports.promisify.custom = kCustomPromisifiedSymbol
-
-function callbackifyOnRejected(reason, cb) {
-  // `!reason` guard inspired by bluebird (Ref: https://goo.gl/t5IS6M).
-  // Because `null` is a special error value in callbacks which means "no error
-  // occurred", we error-wrap so the callback consumer can distinguish between
-  // "the promise rejected with null" or "the promise fulfilled with undefined".
-  if (!reason) {
-    var newReason = new Error('Promise was rejected with a falsy value');
-    newReason.reason = reason;
-    reason = newReason;
-  }
-  return cb(reason);
-}
-
-function callbackify(original) {
-  if (typeof original !== 'function') {
-    throw new TypeError('The "original" argument must be of type Function');
-  }
-
-  // We DO NOT return the promise as it gives the user a false sense that
-  // the promise is actually somehow related to the callback's execution
-  // and that the callback throwing will reject the promise.
-  function callbackified() {
-    var args = [];
-    for (var i = 0; i < arguments.length; i++) {
-      args.push(arguments[i]);
-    }
-
-    var maybeCb = args.pop();
-    if (typeof maybeCb !== 'function') {
-      throw new TypeError('The last argument must be of type Function');
-    }
-    var self = this;
-    var cb = function() {
-      return maybeCb.apply(self, arguments);
-    };
-    // In true node style we process the callback on `nextTick` with all the
-    // implications (stack, `uncaughtException`, `async_hooks`)
-    original.apply(this, args)
-      .then(function(ret) { process.nextTick(cb.bind(null, null, ret)) },
-            function(rej) { process.nextTick(callbackifyOnRejected.bind(null, rej, cb)) });
-  }
-
-  Object.setPrototypeOf(callbackified, Object.getPrototypeOf(original));
-  Object.defineProperties(callbackified,
-                          getOwnPropertyDescriptors(original));
-  return callbackified;
-}
-exports.callbackify = callbackify;
-
-}).call(this)}).call(this,require('_process'))
-},{"./support/isBuffer":6,"./support/types":7,"_process":62,"inherits":26}],9:[function(require,module,exports){
 (function (Buffer){(function (){
 /*!
  * The buffer module from node.js, for the browser.
@@ -3565,7 +1966,7 @@ function numberIsNaN (obj) {
 }
 
 }).call(this)}).call(this,require("buffer").Buffer)
-},{"base64-js":2,"buffer":9,"ieee754":25}],10:[function(require,module,exports){
+},{"base64-js":2,"buffer":5,"ieee754":21}],6:[function(require,module,exports){
 module.exports = {
   "100": "Continue",
   "101": "Switching Protocols",
@@ -3631,7 +2032,7 @@ module.exports = {
   "511": "Network Authentication Required"
 }
 
-},{}],11:[function(require,module,exports){
+},{}],7:[function(require,module,exports){
 'use strict';
 
 var GetIntrinsic = require('get-intrinsic');
@@ -3648,7 +2049,7 @@ module.exports = function callBoundIntrinsic(name, allowMissing) {
 	return intrinsic;
 };
 
-},{"./":12,"get-intrinsic":19}],12:[function(require,module,exports){
+},{"./":8,"get-intrinsic":15}],8:[function(require,module,exports){
 'use strict';
 
 var bind = require('function-bind');
@@ -3697,7 +2098,7 @@ if ($defineProperty) {
 	module.exports.apply = applyBind;
 }
 
-},{"function-bind":18,"get-intrinsic":19}],13:[function(require,module,exports){
+},{"function-bind":14,"get-intrinsic":15}],9:[function(require,module,exports){
 /* jshint esversion: 6 */
 /* jslint node: true */
 'use strict';
@@ -3725,7 +2126,7 @@ module.exports = function serialize (object) {
   }, '') + '}';
 };
 
-},{}],14:[function(require,module,exports){
+},{}],10:[function(require,module,exports){
 'use strict';
 
 var GetIntrinsic = require('get-intrinsic');
@@ -3742,7 +2143,7 @@ if ($gOPD) {
 
 module.exports = $gOPD;
 
-},{"get-intrinsic":19}],15:[function(require,module,exports){
+},{"get-intrinsic":15}],11:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -4241,7 +2642,7 @@ function eventTargetAgnosticAddListener(emitter, name, listener, flags) {
   }
 }
 
-},{}],16:[function(require,module,exports){
+},{}],12:[function(require,module,exports){
 'use strict';
 
 var isCallable = require('is-callable');
@@ -4305,7 +2706,7 @@ var forEach = function forEach(list, iterator, thisArg) {
 
 module.exports = forEach;
 
-},{"is-callable":28}],17:[function(require,module,exports){
+},{"is-callable":24}],13:[function(require,module,exports){
 'use strict';
 
 /* eslint no-invalid-this: 1 */
@@ -4359,14 +2760,14 @@ module.exports = function bind(that) {
     return bound;
 };
 
-},{}],18:[function(require,module,exports){
+},{}],14:[function(require,module,exports){
 'use strict';
 
 var implementation = require('./implementation');
 
 module.exports = Function.prototype.bind || implementation;
 
-},{"./implementation":17}],19:[function(require,module,exports){
+},{"./implementation":13}],15:[function(require,module,exports){
 'use strict';
 
 var undefined;
@@ -4702,7 +3103,7 @@ module.exports = function GetIntrinsic(name, allowMissing) {
 	return value;
 };
 
-},{"function-bind":18,"has":23,"has-symbols":20}],20:[function(require,module,exports){
+},{"function-bind":14,"has":19,"has-symbols":16}],16:[function(require,module,exports){
 'use strict';
 
 var origSymbol = typeof Symbol !== 'undefined' && Symbol;
@@ -4717,7 +3118,7 @@ module.exports = function hasNativeSymbols() {
 	return hasSymbolSham();
 };
 
-},{"./shams":21}],21:[function(require,module,exports){
+},{"./shams":17}],17:[function(require,module,exports){
 'use strict';
 
 /* eslint complexity: [2, 18], max-statements: [2, 33] */
@@ -4761,7 +3162,7 @@ module.exports = function hasSymbols() {
 	return true;
 };
 
-},{}],22:[function(require,module,exports){
+},{}],18:[function(require,module,exports){
 'use strict';
 
 var hasSymbols = require('has-symbols/shams');
@@ -4770,14 +3171,14 @@ module.exports = function hasToStringTagShams() {
 	return hasSymbols() && !!Symbol.toStringTag;
 };
 
-},{"has-symbols/shams":21}],23:[function(require,module,exports){
+},{"has-symbols/shams":17}],19:[function(require,module,exports){
 'use strict';
 
 var bind = require('function-bind');
 
 module.exports = bind.call(Function.call, Object.prototype.hasOwnProperty);
 
-},{"function-bind":18}],24:[function(require,module,exports){
+},{"function-bind":14}],20:[function(require,module,exports){
 var http = require('http')
 var url = require('url')
 
@@ -4810,7 +3211,7 @@ function validateParams (params) {
   return params
 }
 
-},{"http":94,"url":115}],25:[function(require,module,exports){
+},{"http":91,"url":112}],21:[function(require,module,exports){
 /*! ieee754. BSD-3-Clause License. Feross Aboukhadijeh <https://feross.org/opensource> */
 exports.read = function (buffer, offset, isLE, mLen, nBytes) {
   var e, m
@@ -4897,7 +3298,7 @@ exports.write = function (buffer, value, offset, isLE, mLen, nBytes) {
   buffer[offset + i - d] |= s * 128
 }
 
-},{}],26:[function(require,module,exports){
+},{}],22:[function(require,module,exports){
 if (typeof Object.create === 'function') {
   // implementation from standard node.js 'util' module
   module.exports = function inherits(ctor, superCtor) {
@@ -4926,7 +3327,7 @@ if (typeof Object.create === 'function') {
   }
 }
 
-},{}],27:[function(require,module,exports){
+},{}],23:[function(require,module,exports){
 'use strict';
 
 var hasToStringTag = require('has-tostringtag/shams')();
@@ -4961,7 +3362,7 @@ isStandardArguments.isLegacyArguments = isLegacyArguments; // for tests
 
 module.exports = supportsStandardArguments ? isStandardArguments : isLegacyArguments;
 
-},{"call-bind/callBound":11,"has-tostringtag/shams":22}],28:[function(require,module,exports){
+},{"call-bind/callBound":7,"has-tostringtag/shams":18}],24:[function(require,module,exports){
 'use strict';
 
 var fnToStr = Function.prototype.toString;
@@ -5037,7 +3438,7 @@ module.exports = reflectApply
 		return strClass === fnClass || strClass === genClass;
 	};
 
-},{}],29:[function(require,module,exports){
+},{}],25:[function(require,module,exports){
 'use strict';
 
 var toStr = Object.prototype.toString;
@@ -5077,7 +3478,7 @@ module.exports = function isGeneratorFunction(fn) {
 	return getProto(fn) === GeneratorFunction;
 };
 
-},{"has-tostringtag/shams":22}],30:[function(require,module,exports){
+},{"has-tostringtag/shams":18}],26:[function(require,module,exports){
 (function (global){(function (){
 'use strict';
 
@@ -5141,7 +3542,7 @@ module.exports = function isTypedArray(value) {
 };
 
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"available-typed-arrays":1,"call-bind/callBound":11,"es-abstract/helpers/getOwnPropertyDescriptor":14,"for-each":16,"has-tostringtag/shams":22}],31:[function(require,module,exports){
+},{"available-typed-arrays":1,"call-bind/callBound":7,"es-abstract/helpers/getOwnPropertyDescriptor":10,"for-each":12,"has-tostringtag/shams":18}],27:[function(require,module,exports){
 /*
  * Copyright (c) 2019 Digital Bazaar, Inc. All rights reserved.
  */
@@ -5404,7 +3805,7 @@ function _resolveContextUrls({context, base}) {
   }
 }
 
-},{"./JsonLdError":32,"./ResolvedContext":36,"./types":50,"./url":51,"./util":52}],32:[function(require,module,exports){
+},{"./JsonLdError":28,"./ResolvedContext":32,"./types":47,"./url":48,"./util":49}],28:[function(require,module,exports){
 /*
  * Copyright (c) 2017 Digital Bazaar, Inc. All rights reserved.
  */
@@ -5429,7 +3830,7 @@ module.exports = class JsonLdError extends Error {
   }
 };
 
-},{}],33:[function(require,module,exports){
+},{}],29:[function(require,module,exports){
 /*
  * Copyright (c) 2017 Digital Bazaar, Inc. All rights reserved.
  */
@@ -5483,7 +3884,7 @@ module.exports = jsonld => {
   return JsonLdProcessor;
 };
 
-},{}],34:[function(require,module,exports){
+},{}],30:[function(require,module,exports){
 /*
  * Copyright (c) 2017 Digital Bazaar, Inc. All rights reserved.
  */
@@ -5492,7 +3893,7 @@ module.exports = jsonld => {
 // TODO: move `NQuads` to its own package
 module.exports = require('rdf-canonize').NQuads;
 
-},{"rdf-canonize":66}],35:[function(require,module,exports){
+},{"rdf-canonize":64}],31:[function(require,module,exports){
 /*
  * Copyright (c) 2017-2019 Digital Bazaar, Inc. All rights reserved.
  */
@@ -5532,7 +3933,7 @@ module.exports = class RequestQueue {
   }
 };
 
-},{}],36:[function(require,module,exports){
+},{}],32:[function(require,module,exports){
 /*
  * Copyright (c) 2019 Digital Bazaar, Inc. All rights reserved.
  */
@@ -5564,7 +3965,7 @@ module.exports = class ResolvedContext {
   }
 };
 
-},{"lru-cache":53}],37:[function(require,module,exports){
+},{"lru-cache":50}],33:[function(require,module,exports){
 /*
  * Copyright (c) 2017 Digital Bazaar, Inc. All rights reserved.
  */
@@ -5601,6 +4002,7 @@ const {
 } = require('./url');
 
 const {
+  REGEX_KEYWORD,
   addValue: _addValue,
   asArray: _asArray,
   compareShortestLeast: _compareShortestLeast
@@ -5618,7 +4020,6 @@ module.exports = api;
  *          to compact, null for none.
  * @param element the element to compact.
  * @param options the compaction options.
- * @param compactionMap the compaction map to use.
  *
  * @return a promise that resolves to the compacted value.
  */
@@ -5626,33 +4027,21 @@ api.compact = async ({
   activeCtx,
   activeProperty = null,
   element,
-  options = {},
-  compactionMap = () => undefined
+  options = {}
 }) => {
   // recursively compact array
   if(_isArray(element)) {
     let rval = [];
     for(let i = 0; i < element.length; ++i) {
-      // compact, dropping any null values unless custom mapped
-      let compacted = await api.compact({
+      const compacted = await api.compact({
         activeCtx,
         activeProperty,
         element: element[i],
-        options,
-        compactionMap
+        options
       });
       if(compacted === null) {
-        compacted = await compactionMap({
-          unmappedValue: element[i],
-          activeCtx,
-          activeProperty,
-          parent: element,
-          index: i,
-          options
-        });
-        if(compacted === undefined) {
-          continue;
-        }
+        // FIXME: need event?
+        continue;
       }
       rval.push(compacted);
     }
@@ -5716,8 +4105,7 @@ api.compact = async ({
           activeCtx,
           activeProperty,
           element: element['@list'],
-          options,
-          compactionMap
+          options
         });
       }
     }
@@ -5845,8 +4233,7 @@ api.compact = async ({
           activeCtx,
           activeProperty: '@reverse',
           element: expandedValue,
-          options,
-          compactionMap
+          options
         });
 
         // handle double-reversed properties
@@ -5883,8 +4270,7 @@ api.compact = async ({
           activeCtx,
           activeProperty,
           element: expandedValue,
-          options,
-          compactionMap
+          options
         });
 
         if(!(_isArray(compactedValue) && compactedValue.length === 0)) {
@@ -6001,8 +4387,7 @@ api.compact = async ({
           activeCtx,
           activeProperty: itemActiveProperty,
           element: (isList || isGraph) ? inner : expandedItem,
-          options,
-          compactionMap
+          options
         });
 
         // handle @list
@@ -6197,8 +4582,7 @@ api.compact = async ({
                 activeCtx,
                 activeProperty: itemActiveProperty,
                 element: {'@id': expandedItem['@id']},
-                options,
-                compactionMap
+                options
               });
             }
           }
@@ -6512,7 +4896,8 @@ api.compactIri = ({
         // The None case preserves rval as potentially relative
         return iri;
       } else {
-        return _removeBase(_prependBase(base, activeCtx['@base']), iri);
+        const _iri = _removeBase(_prependBase(base, activeCtx['@base']), iri);
+        return REGEX_KEYWORD.test(_iri) ? `./${_iri}` : _iri;
       }
     } else {
       return _removeBase(base, iri);
@@ -6744,7 +5129,7 @@ function _checkNestProperty(activeCtx, nestProperty, options) {
   }
 }
 
-},{"./JsonLdError":32,"./context":39,"./graphTypes":45,"./types":50,"./url":51,"./util":52}],38:[function(require,module,exports){
+},{"./JsonLdError":28,"./context":35,"./graphTypes":42,"./types":47,"./url":48,"./util":49}],34:[function(require,module,exports){
 /*
  * Copyright (c) 2017 Digital Bazaar, Inc. All rights reserved.
  */
@@ -6778,7 +5163,7 @@ module.exports = {
   XSD_STRING: XSD + 'string',
 };
 
-},{}],39:[function(require,module,exports){
+},{}],35:[function(require,module,exports){
 /*
  * Copyright (c) 2017-2019 Digital Bazaar, Inc. All rights reserved.
  */
@@ -6801,13 +5186,18 @@ const {
 } = require('./url');
 
 const {
+  handleEvent: _handleEvent
+} = require('./events');
+
+const {
+  REGEX_BCP47,
+  REGEX_KEYWORD,
   asArray: _asArray,
   compareShortestLeast: _compareShortestLeast
 } = require('./util');
 
 const INITIAL_CONTEXT_CACHE = new Map();
 const INITIAL_CONTEXT_CACHE_MAX_SIZE = 10000;
-const KEYWORD_PATTERN = /^@[a-zA-Z]+$/;
 
 const api = {};
 module.exports = api;
@@ -6841,6 +5231,23 @@ api.process = async ({
   if(ctxs.length === 0) {
     return activeCtx;
   }
+
+  // event handler for capturing events to replay when using a cached context
+  const events = [];
+  const eventCaptureHandler = [
+    ({event, next}) => {
+      events.push(event);
+      next();
+    }
+  ];
+  // chain to original handler
+  if(options.eventHandler) {
+    eventCaptureHandler.push(options.eventHandler);
+  }
+  // store original options to use when replaying events
+  const originalOptions = options;
+  // shallow clone options with event capture handler
+  options = {...options, eventHandler: eventCaptureHandler};
 
   // resolve contexts
   const resolved = await options.contextResolver.resolve({
@@ -6879,46 +5286,12 @@ api.process = async ({
     if(ctx === null) {
       // We can't nullify if there are protected terms and we're
       // not allowing overrides (e.g. processing a property term scoped context)
-      if(!overrideProtected &&
-        Object.keys(activeCtx.protected).length !== 0) {
-        const protectedMode = (options && options.protectedMode) || 'error';
-        if(protectedMode === 'error') {
-          throw new JsonLdError(
-            'Tried to nullify a context with protected terms outside of ' +
-            'a term definition.',
-            'jsonld.SyntaxError',
-            {code: 'invalid context nullification'});
-        } else if(protectedMode === 'warn') {
-          // FIXME: remove logging and use a handler
-          console.warn('WARNING: invalid context nullification');
-
-          // get processed context from cache if available
-          const processed = resolvedContext.getProcessed(activeCtx);
-          if(processed) {
-            rval = activeCtx = processed;
-            continue;
-          }
-
-          const oldActiveCtx = activeCtx;
-          // copy all protected term definitions to fresh initial context
-          rval = activeCtx = api.getInitialContext(options).clone();
-          for(const [term, _protected] of
-            Object.entries(oldActiveCtx.protected)) {
-            if(_protected) {
-              activeCtx.mappings[term] =
-                util.clone(oldActiveCtx.mappings[term]);
-            }
-          }
-          activeCtx.protected = util.clone(oldActiveCtx.protected);
-
-          // cache processed result
-          resolvedContext.setProcessed(oldActiveCtx, rval);
-          continue;
-        }
+      if(!overrideProtected && Object.keys(activeCtx.protected).length !== 0) {
         throw new JsonLdError(
-          'Invalid protectedMode.',
+          'Tried to nullify a context with protected terms outside of ' +
+          'a term definition.',
           'jsonld.SyntaxError',
-          {code: 'invalid protected mode', context: localCtx, protectedMode});
+          {code: 'invalid context nullification'});
       }
       rval = activeCtx = api.getInitialContext(options).clone();
       continue;
@@ -6927,7 +5300,14 @@ api.process = async ({
     // get processed context from cache if available
     const processed = resolvedContext.getProcessed(activeCtx);
     if(processed) {
-      rval = activeCtx = processed;
+      if(originalOptions.eventHandler) {
+        // replay events with original non-capturing options
+        for(const event of processed.events) {
+          _handleEvent({event, options: originalOptions});
+        }
+      }
+
+      rval = activeCtx = processed.context;
       continue;
     }
 
@@ -7012,8 +5392,25 @@ api.process = async ({
           '@context must be an absolute IRI.',
           'jsonld.SyntaxError', {code: 'invalid vocab mapping', context: ctx});
       } else {
-        rval['@vocab'] = _expandIri(rval, value, {vocab: true, base: true},
+        const vocab = _expandIri(rval, value, {vocab: true, base: true},
           undefined, undefined, options);
+        if(!_isAbsoluteIri(vocab)) {
+          if(options.eventHandler) {
+            _handleEvent({
+              event: {
+                type: ['JsonLdEvent'],
+                code: 'relative @vocab reference',
+                level: 'warning',
+                message: 'Relative @vocab reference found.',
+                details: {
+                  vocab
+                }
+              },
+              options
+            });
+          }
+        }
+        rval['@vocab'] = vocab;
       }
       defined.set('@vocab', true);
     }
@@ -7030,6 +5427,22 @@ api.process = async ({
           'jsonld.SyntaxError',
           {code: 'invalid default language', context: ctx});
       } else {
+        if(!value.match(REGEX_BCP47)) {
+          if(options.eventHandler) {
+            _handleEvent({
+              event: {
+                type: ['JsonLdEvent'],
+                code: 'invalid @language value',
+                level: 'warning',
+                message: '@language value must be valid BCP47.',
+                details: {
+                  language: value
+                }
+              },
+              options
+            });
+          }
+        }
         rval['@language'] = value.toLowerCase();
       }
       defined.set('@language', true);
@@ -7195,7 +5608,10 @@ api.process = async ({
     }
 
     // cache processed result
-    resolvedContext.setProcessed(activeCtx, rval);
+    resolvedContext.setProcessed(activeCtx, {
+      context: rval,
+      events
+    });
   }
 
   return rval;
@@ -7210,9 +5626,6 @@ api.process = async ({
  * @param defined a map of defining/defined keys to detect cycles and prevent
  *          double definitions.
  * @param {Object} [options] - creation options.
- * @param {string} [options.protectedMode="error"] - "error" to throw error
- *   on `@protected` constraint violation, "warn" to allow violations and
- *   signal a warning.
  * @param overrideProtected `false` allows protected terms to be modified.
  */
 api.createTermDefinition = ({
@@ -7262,10 +5675,23 @@ api.createTermDefinition = ({
       'Invalid JSON-LD syntax; keywords cannot be overridden.',
       'jsonld.SyntaxError',
       {code: 'keyword redefinition', context: localCtx, term});
-  } else if(term.match(KEYWORD_PATTERN)) {
-    // FIXME: remove logging and use a handler
-    console.warn('WARNING: terms beginning with "@" are reserved' +
-      ' for future use and ignored', {term});
+  } else if(term.match(REGEX_KEYWORD)) {
+    if(options.eventHandler) {
+      _handleEvent({
+        event: {
+          type: ['JsonLdEvent'],
+          code: 'reserved term',
+          level: 'warning',
+          message:
+            'Terms beginning with "@" are ' +
+            'reserved for future use and dropped.',
+          details: {
+            term
+          }
+        },
+        options
+      });
+    }
     return;
   } else if(term === '') {
     throw new JsonLdError(
@@ -7345,10 +5771,23 @@ api.createTermDefinition = ({
         'jsonld.SyntaxError', {code: 'invalid IRI mapping', context: localCtx});
     }
 
-    if(!api.isKeyword(reverse) && reverse.match(KEYWORD_PATTERN)) {
-      // FIXME: remove logging and use a handler
-      console.warn('WARNING: values beginning with "@" are reserved' +
-        ' for future use and ignored', {reverse});
+    if(reverse.match(REGEX_KEYWORD)) {
+      if(options.eventHandler) {
+        _handleEvent({
+          event: {
+            type: ['JsonLdEvent'],
+            code: 'reserved @reverse value',
+            level: 'warning',
+            message:
+              '@reverse values beginning with "@" are ' +
+              'reserved for future use and dropped.',
+            details: {
+              reverse
+            }
+          },
+          options
+        });
+      }
       if(previousMapping) {
         activeCtx.mappings.set(term, previousMapping);
       } else {
@@ -7381,10 +5820,23 @@ api.createTermDefinition = ({
     if(id === null) {
       // reserve a null term, which may be protected
       mapping['@id'] = null;
-    } else if(!api.isKeyword(id) && id.match(KEYWORD_PATTERN)) {
-      // FIXME: remove logging and use a handler
-      console.warn('WARNING: values beginning with "@" are reserved' +
-        ' for future use and ignored', {id});
+    } else if(!api.isKeyword(id) && id.match(REGEX_KEYWORD)) {
+      if(options.eventHandler) {
+        _handleEvent({
+          event: {
+            type: ['JsonLdEvent'],
+            code: 'reserved @id value',
+            level: 'warning',
+            message:
+              '@id values beginning with "@" are ' +
+              'reserved for future use and dropped.',
+            details: {
+              id
+            }
+          },
+          options
+        });
+      }
       if(previousMapping) {
         activeCtx.mappings.set(term, previousMapping);
       } else {
@@ -7699,23 +6151,10 @@ api.createTermDefinition = ({
     activeCtx.protected[term] = true;
     mapping.protected = true;
     if(!_deepCompare(previousMapping, mapping)) {
-      const protectedMode = (options && options.protectedMode) || 'error';
-      if(protectedMode === 'error') {
-        throw new JsonLdError(
-          `Invalid JSON-LD syntax; tried to redefine "${term}" which is a ` +
-          'protected term.',
-          'jsonld.SyntaxError',
-          {code: 'protected term redefinition', context: localCtx, term});
-      } else if(protectedMode === 'warn') {
-        // FIXME: remove logging and use a handler
-        console.warn('WARNING: protected term redefinition', {term});
-        return;
-      }
       throw new JsonLdError(
-        'Invalid protectedMode.',
+        'Invalid JSON-LD syntax; tried to redefine a protected term.',
         'jsonld.SyntaxError',
-        {code: 'invalid protected mode', context: localCtx, term,
-          protectedMode});
+        {code: 'protected term redefinition', context: localCtx, term});
     }
   }
 };
@@ -7764,7 +6203,7 @@ function _expandIri(activeCtx, value, relativeTo, localCtx, defined, options) {
   }
 
   // ignore non-keyword things that look like a keyword
-  if(value.match(KEYWORD_PATTERN)) {
+  if(value.match(REGEX_KEYWORD)) {
     return null;
   }
 
@@ -7822,20 +6261,103 @@ function _expandIri(activeCtx, value, relativeTo, localCtx, defined, options) {
     }
   }
 
-  // prepend vocab
+  // A flag that captures whether the iri being expanded is
+  // the value for an @type
+  //let typeExpansion = false;
+
+  //if(options !== undefined && options.typeExpansion !== undefined) {
+  //  typeExpansion = options.typeExpansion;
+  //}
+
   if(relativeTo.vocab && '@vocab' in activeCtx) {
-    return activeCtx['@vocab'] + value;
+    // prepend vocab
+    const prependedResult = activeCtx['@vocab'] + value;
+    // FIXME: needed? may be better as debug event.
+    /*
+    if(options && options.eventHandler) {
+      _handleEvent({
+        event: {
+          type: ['JsonLdEvent'],
+          code: 'prepending @vocab during expansion',
+          level: 'info',
+          message: 'Prepending @vocab during expansion.',
+          details: {
+            type: '@vocab',
+            vocab: activeCtx['@vocab'],
+            value,
+            result: prependedResult,
+            typeExpansion
+          }
+        },
+        options
+      });
+    }
+    */
+    // the null case preserves value as potentially relative
+    value = prependedResult;
+  } else if(relativeTo.base) {
+    // prepend base
+    let prependedResult;
+    let base;
+    if('@base' in activeCtx) {
+      if(activeCtx['@base']) {
+        base = prependBase(options.base, activeCtx['@base']);
+        prependedResult = prependBase(base, value);
+      } else {
+        base = activeCtx['@base'];
+        prependedResult = value;
+      }
+    } else {
+      base = options.base;
+      prependedResult = prependBase(options.base, value);
+    }
+    // FIXME: needed? may be better as debug event.
+    /*
+    if(options && options.eventHandler) {
+      _handleEvent({
+        event: {
+          type: ['JsonLdEvent'],
+          code: 'prepending @base during expansion',
+          level: 'info',
+          message: 'Prepending @base during expansion.',
+          details: {
+            type: '@base',
+            base,
+            value,
+            result: prependedResult,
+            typeExpansion
+          }
+        },
+        options
+      });
+    }
+    */
+    // the null case preserves value as potentially relative
+    value = prependedResult;
   }
 
-  // prepend base
-  if(relativeTo.base && '@base' in activeCtx) {
-    if(activeCtx['@base']) {
-      // The null case preserves value as potentially relative
-      return prependBase(prependBase(options.base, activeCtx['@base']), value);
-    }
-  } else if(relativeTo.base) {
-    return prependBase(options.base, value);
+  // FIXME: duplicate? needed? maybe just enable in a verbose debug mode
+  /*
+  if(!_isAbsoluteIri(value) && options && options.eventHandler) {
+    // emit event indicating a relative IRI was found, which can result in it
+    // being dropped when converting to other RDF representations
+    _handleEvent({
+      event: {
+        type: ['JsonLdEvent'],
+        code: 'relative IRI after expansion',
+        // FIXME: what level?
+        level: 'warning',
+        message: 'Relative IRI after expansion.',
+        details: {
+          relativeIri: value,
+          typeExpansion
+        }
+      },
+      options
+    });
+    // NOTE: relative reference events emitted at calling sites as needed
   }
+  */
 
   return value;
 }
@@ -8250,7 +6772,7 @@ function _deepCompare(x1, x2) {
   return true;
 }
 
-},{"./JsonLdError":32,"./types":50,"./url":51,"./util":52}],40:[function(require,module,exports){
+},{"./JsonLdError":28,"./events":37,"./types":47,"./url":48,"./util":49}],36:[function(require,module,exports){
 /*
  * Copyright (c) 2017 Digital Bazaar, Inc. All rights reserved.
  */
@@ -8369,7 +6891,187 @@ function _get(xhr, url, headers) {
   });
 }
 
-},{"../JsonLdError":32,"../RequestQueue":35,"../constants":38,"../url":51,"../util":52}],41:[function(require,module,exports){
+},{"../JsonLdError":28,"../RequestQueue":31,"../constants":34,"../url":48,"../util":49}],37:[function(require,module,exports){
+/*
+ * Copyright (c) 2020 Digital Bazaar, Inc. All rights reserved.
+ */
+'use strict';
+
+const JsonLdError = require('./JsonLdError');
+
+const {
+  isArray: _isArray
+} = require('./types');
+
+const {
+  asArray: _asArray
+} = require('./util');
+
+const api = {};
+module.exports = api;
+
+// default handler, store as null or an array
+// exposed to allow fast external pre-handleEvent() checks
+api.defaultEventHandler = null;
+
+/**
+ * Setup event handler.
+ *
+ * Return an array event handler constructed from an optional safe mode
+ * handler, an optional options event handler, and an optional default handler.
+ *
+ * @param {object} options - processing options
+ *   {function|object|array} [eventHandler] - an event handler.
+ *
+ * @return an array event handler.
+ */
+api.setupEventHandler = ({options = {}}) => {
+  // build in priority order
+  const eventHandler = [].concat(
+    options.safe ? api.safeEventHandler : [],
+    options.eventHandler ? _asArray(options.eventHandler) : [],
+    api.defaultEventHandler ? api.defaultEventHandler : []
+  );
+  // null if no handlers
+  return eventHandler.length === 0 ? null : eventHandler;
+};
+
+/**
+ * Handle an event.
+ *
+ * Top level APIs have a common 'eventHandler' option. This option can be a
+ * function, array of functions, object mapping event.code to functions (with a
+ * default to call next()), or any combination of such handlers. Handlers will
+ * be called with an object with an 'event' entry and a 'next' function. Custom
+ * handlers should process the event as appropriate. The 'next()' function
+ * should be called to let the next handler process the event.
+ *
+ * NOTE: Only call this function if options.eventHandler is set and is an
+ * array of hanlers. This is an optimization. Callers are expected to check
+ * for an event handler before constructing events and calling this function.
+ *
+ * @param {object} event - event structure:
+ *   {string} code - event code
+ *   {string} level - severity level, one of: ['warning']
+ *   {string} message - human readable message
+ *   {object} details - event specific details
+ * @param {object} options - processing options
+ *   {array} eventHandler - an event handler array.
+ */
+api.handleEvent = ({
+  event,
+  options
+}) => {
+  _handle({event, handlers: options.eventHandler});
+};
+
+function _handle({event, handlers}) {
+  let doNext = true;
+  for(let i = 0; doNext && i < handlers.length; ++i) {
+    doNext = false;
+    const handler = handlers[i];
+    if(_isArray(handler)) {
+      doNext = _handle({event, handlers: handler});
+    } else if(typeof handler === 'function') {
+      handler({event, next: () => {
+        doNext = true;
+      }});
+    } else if(typeof handler === 'object') {
+      if(event.code in handler) {
+        handler[event.code]({event, next: () => {
+          doNext = true;
+        }});
+      } else {
+        doNext = true;
+      }
+    } else {
+      throw new JsonLdError(
+        'Invalid event handler.',
+        'jsonld.InvalidEventHandler',
+        {event});
+    }
+  }
+  return doNext;
+}
+
+const _notSafeEventCodes = new Set([
+  'empty object',
+  'free-floating scalar',
+  'invalid @language value',
+  'invalid property',
+  // NOTE: spec edge case
+  'null @id value',
+  'null @value value',
+  'object with only @id',
+  'object with only @language',
+  'object with only @list',
+  'object with only @value',
+  'relative @id reference',
+  'relative @type reference',
+  'relative @vocab reference',
+  'reserved @id value',
+  'reserved @reverse value',
+  'reserved term',
+  // toRDF
+  'blank node predicate',
+  'relative graph reference',
+  'relative object reference',
+  'relative predicate reference',
+  'relative subject reference'
+]);
+
+// safe handler that rejects unsafe warning conditions
+api.safeEventHandler = function safeEventHandler({event, next}) {
+  // fail on all unsafe warnings
+  if(event.level === 'warning' && _notSafeEventCodes.has(event.code)) {
+    throw new JsonLdError(
+      'Safe mode validation error.',
+      'jsonld.ValidationError',
+      {event}
+    );
+  }
+  next();
+};
+
+// logs all events and continues
+api.logEventHandler = function logEventHandler({event, next}) {
+  console.log(`EVENT: ${event.message}`, {event});
+  next();
+};
+
+// log 'warning' level events
+api.logWarningEventHandler = function logWarningEventHandler({event, next}) {
+  if(event.level === 'warning') {
+    console.warn(`WARNING: ${event.message}`, {event});
+  }
+  next();
+};
+
+// fallback to throw errors for any unhandled events
+api.unhandledEventHandler = function unhandledEventHandler({event}) {
+  throw new JsonLdError(
+    'No handler for event.',
+    'jsonld.UnhandledEvent',
+    {event}
+  );
+};
+
+/**
+ * Set default event handler.
+ *
+ * By default, all event are unhandled. It is recommended to pass in an
+ * eventHandler into each call. However, this call allows using a default
+ * eventHandler when one is not otherwise provided.
+ *
+ * @param {object} options - default handler options:
+ *   {function|object|array} eventHandler - a default event handler.
+ *     falsey to unset.
+ */
+api.setDefaultEventHandler = function({eventHandler} = {}) {
+  api.defaultEventHandler = eventHandler ? _asArray(eventHandler) : null;
+};
+
+},{"./JsonLdError":28,"./types":47,"./util":49}],38:[function(require,module,exports){
 /*
  * Copyright (c) 2017 Digital Bazaar, Inc. All rights reserved.
  */
@@ -8405,15 +7107,20 @@ const {
 } = require('./url');
 
 const {
+  REGEX_BCP47,
+  REGEX_KEYWORD,
   addValue: _addValue,
   asArray: _asArray,
   getValues: _getValues,
   validateTypeValue: _validateTypeValue
 } = require('./util');
 
+const {
+  handleEvent: _handleEvent
+} = require('./events');
+
 const api = {};
 module.exports = api;
-const REGEX_BCP47 = /^[a-zA-Z]{1,8}(-[a-zA-Z0-9]{1,8})*$/;
 
 /**
  * Recursively expands an element using the given context. Any context in
@@ -8430,10 +7137,6 @@ const REGEX_BCP47 = /^[a-zA-Z]{1,8}(-[a-zA-Z0-9]{1,8})*$/;
  * @param typeScopedContext an optional type-scoped active context for
  *          expanding values of nodes that were expressed according to
  *          a type-scoped context.
- * @param expansionMap(info) a function that can be used to custom map
- *          unmappable values (or to throw an error when they are detected);
- *          if this function returns `undefined` then the default behavior
- *          will be used.
  *
  * @return a Promise that resolves to the expanded value.
  */
@@ -8444,8 +7147,7 @@ api.expand = async ({
   options = {},
   insideList = false,
   insideIndex = false,
-  typeScopedContext = null,
-  expansionMap = () => undefined
+  typeScopedContext = null
 }) => {
   // nothing to expand
   if(element === null || element === undefined) {
@@ -8458,21 +7160,28 @@ api.expand = async ({
   }
 
   if(!_isArray(element) && !_isObject(element)) {
-    // drop free-floating scalars that are not in lists unless custom mapped
+    // drop free-floating scalars that are not in lists
     if(!insideList && (activeProperty === null ||
       _expandIri(activeCtx, activeProperty, {vocab: true},
         options) === '@graph')) {
-      const mapped = await expansionMap({
-        unmappedValue: element,
-        activeCtx,
-        activeProperty,
-        options,
-        insideList
-      });
-      if(mapped === undefined) {
-        return null;
+      // FIXME
+      if(options.eventHandler) {
+        _handleEvent({
+          event: {
+            type: ['JsonLdEvent'],
+            code: 'free-floating scalar',
+            level: 'warning',
+            message: 'Dropping free-floating scalar not in a list.',
+            details: {
+              value: element
+              //activeProperty
+              //insideList
+            }
+          },
+          options
+        });
       }
-      return mapped;
+      return null;
     }
 
     // expand element according to value expansion rules
@@ -8492,7 +7201,6 @@ api.expand = async ({
         activeProperty,
         element: element[i],
         options,
-        expansionMap,
         insideIndex,
         typeScopedContext
       });
@@ -8501,19 +7209,16 @@ api.expand = async ({
       }
 
       if(e === null) {
-        e = await expansionMap({
-          unmappedValue: element[i],
-          activeCtx,
-          activeProperty,
-          parent: element,
-          index: i,
-          options,
-          expandedParent: rval,
-          insideList
-        });
-        if(e === undefined) {
-          continue;
-        }
+        // FIXME: add debug event?
+        //unmappedValue: element[i],
+        //activeProperty,
+        //parent: element,
+        //index: i,
+        //expandedParent: rval,
+        //insideList
+
+        // NOTE: no-value events emitted at calling sites as needed
+        continue;
       }
 
       if(_isArray(e)) {
@@ -8626,8 +7331,8 @@ api.expand = async ({
     options,
     insideList,
     typeKey,
-    typeScopedContext,
-    expansionMap});
+    typeScopedContext
+  });
 
   // get property count on expanded output
   keys = Object.keys(rval);
@@ -8664,24 +7369,27 @@ api.expand = async ({
     const values = rval['@value'] === null ? [] : _asArray(rval['@value']);
     const types = _getValues(rval, '@type');
 
-    // drop null @values unless custom mapped
+    // drop null @values
     if(_processingMode(activeCtx, 1.1) && types.includes('@json') &&
       types.length === 1) {
       // Any value of @value is okay if @type: @json
     } else if(values.length === 0) {
-      const mapped = await expansionMap({
-        unmappedValue: rval,
-        activeCtx,
-        activeProperty,
-        element,
-        options,
-        insideList
-      });
-      if(mapped !== undefined) {
-        rval = mapped;
-      } else {
-        rval = null;
+      // FIXME
+      if(options.eventHandler) {
+        _handleEvent({
+          event: {
+            type: ['JsonLdEvent'],
+            code: 'null @value value',
+            level: 'warning',
+            message: 'Dropping null @value value.',
+            details: {
+              value: rval
+            }
+          },
+          options
+        });
       }
+      rval = null;
     } else if(!values.every(v => (_isString(v) || _isEmptyObject(v))) &&
       '@language' in rval) {
       // if @language is present, @value must be a string
@@ -8716,43 +7424,64 @@ api.expand = async ({
       count = keys.length;
     }
   } else if(count === 1 && '@language' in rval) {
-    // drop objects with only @language unless custom mapped
-    const mapped = await expansionMap(rval, {
-      unmappedValue: rval,
-      activeCtx,
-      activeProperty,
-      element,
-      options,
-      insideList
-    });
-    if(mapped !== undefined) {
-      rval = mapped;
-    } else {
-      rval = null;
+    // drop objects with only @language
+    // FIXME
+    if(options.eventHandler) {
+      _handleEvent({
+        event: {
+          type: ['JsonLdEvent'],
+          code: 'object with only @language',
+          level: 'warning',
+          message: 'Dropping object with only @language.',
+          details: {
+            value: rval
+          }
+        },
+        options
+      });
     }
+    rval = null;
   }
 
-  // drop certain top-level objects that do not occur in lists, unless custom
-  // mapped
+  // drop certain top-level objects that do not occur in lists
   if(_isObject(rval) &&
     !options.keepFreeFloatingNodes && !insideList &&
     (activeProperty === null || expandedActiveProperty === '@graph')) {
     // drop empty object, top-level @value/@list, or object with only @id
     if(count === 0 || '@value' in rval || '@list' in rval ||
       (count === 1 && '@id' in rval)) {
-      const mapped = await expansionMap({
-        unmappedValue: rval,
-        activeCtx,
-        activeProperty,
-        element,
-        options,
-        insideList
-      });
-      if(mapped !== undefined) {
-        rval = mapped;
-      } else {
-        rval = null;
+      // FIXME
+      if(options.eventHandler) {
+        // FIXME: one event or diff event for empty, @v/@l, {@id}?
+        let code;
+        let message;
+        if(count === 0) {
+          code = 'empty object';
+          message = 'Dropping empty object.';
+        } else if('@value' in rval) {
+          code = 'object with only @value';
+          message = 'Dropping object with only @value.';
+        } else if('@list' in rval) {
+          code = 'object with only @list';
+          message = 'Dropping object with only @list.';
+        } else if(count === 1 && '@id' in rval) {
+          code = 'object with only @id';
+          message = 'Dropping object with only @id.';
+        }
+        _handleEvent({
+          event: {
+            type: ['JsonLdEvent'],
+            code,
+            level: 'warning',
+            message,
+            details: {
+              value: rval
+            }
+          },
+          options
+        });
       }
+      rval = null;
     }
   }
 
@@ -8771,10 +7500,6 @@ api.expand = async ({
  * @param insideList true if the element is a list, false if not.
  * @param typeKey first key found expanding to @type.
  * @param typeScopedContext the context before reverting.
- * @param expansionMap(info) a function that can be used to custom map
- *          unmappable values (or to throw an error when they are detected);
- *          if this function returns `undefined` then the default behavior
- *          will be used.
  */
 async function _expandObject({
   activeCtx,
@@ -8785,8 +7510,7 @@ async function _expandObject({
   options = {},
   insideList,
   typeKey,
-  typeScopedContext,
-  expansionMap
+  typeScopedContext
 }) {
   const keys = Object.keys(element).sort();
   const nests = [];
@@ -8796,7 +7520,10 @@ async function _expandObject({
   const isJsonType = element[typeKey] &&
     _expandIri(activeCtx,
       (_isArray(element[typeKey]) ? element[typeKey][0] : element[typeKey]),
-      {vocab: true}, options) === '@json';
+      {vocab: true}, {
+        ...options,
+        typeExpansion: true
+      }) === '@json';
 
   for(const key of keys) {
     let value = element[key];
@@ -8808,25 +7535,28 @@ async function _expandObject({
     }
 
     // expand property
-    let expandedProperty = _expandIri(activeCtx, key, {vocab: true}, options);
+    const expandedProperty = _expandIri(activeCtx, key, {vocab: true}, options);
 
-    // drop non-absolute IRI keys that aren't keywords unless custom mapped
+    // drop non-absolute IRI keys that aren't keywords
     if(expandedProperty === null ||
       !(_isAbsoluteIri(expandedProperty) || _isKeyword(expandedProperty))) {
-      // TODO: use `await` to support async
-      expandedProperty = expansionMap({
-        unmappedProperty: key,
-        activeCtx,
-        activeProperty,
-        parent: element,
-        options,
-        insideList,
-        value,
-        expandedParent
-      });
-      if(expandedProperty === undefined) {
-        continue;
+      if(options.eventHandler) {
+        _handleEvent({
+          event: {
+            type: ['JsonLdEvent'],
+            code: 'invalid property',
+            level: 'warning',
+            message: 'Dropping property that did not expand into an ' +
+              'absolute IRI or keyword.',
+            details: {
+              property: key,
+              expandedProperty
+            }
+          },
+          options
+        });
       }
+      continue;
     }
 
     if(_isKeyword(expandedProperty)) {
@@ -8879,8 +7609,61 @@ async function _expandObject({
 
       _addValue(
         expandedParent, '@id',
-        _asArray(value).map(v =>
-          _isString(v) ? _expandIri(activeCtx, v, {base: true}, options) : v),
+        _asArray(value).map(v => {
+          if(_isString(v)) {
+            const ve = _expandIri(activeCtx, v, {base: true}, options);
+            if(options.eventHandler) {
+              if(ve === null) {
+                // NOTE: spec edge case
+                // See https://github.com/w3c/json-ld-api/issues/480
+                if(v === null) {
+                  _handleEvent({
+                    event: {
+                      type: ['JsonLdEvent'],
+                      code: 'null @id value',
+                      level: 'warning',
+                      message: 'Null @id found.',
+                      details: {
+                        id: v
+                      }
+                    },
+                    options
+                  });
+                } else {
+                  // matched KEYWORD regex
+                  _handleEvent({
+                    event: {
+                      type: ['JsonLdEvent'],
+                      code: 'reserved @id value',
+                      level: 'warning',
+                      message: 'Reserved @id found.',
+                      details: {
+                        id: v
+                      }
+                    },
+                    options
+                  });
+                }
+              } else if(!_isAbsoluteIri(ve)) {
+                _handleEvent({
+                  event: {
+                    type: ['JsonLdEvent'],
+                    code: 'relative @id reference',
+                    level: 'warning',
+                    message: 'Relative @id reference found.',
+                    details: {
+                      id: v,
+                      expandedId: ve
+                    }
+                  },
+                  options
+                });
+              }
+            }
+            return ve;
+          }
+          return v;
+        }),
         {propertyIsArray: options.isFrame});
       continue;
     }
@@ -8892,17 +7675,39 @@ async function _expandObject({
         value = Object.fromEntries(Object.entries(value).map(([k, v]) => [
           _expandIri(typeScopedContext, k, {vocab: true}),
           _asArray(v).map(vv =>
-            _expandIri(typeScopedContext, vv, {base: true, vocab: true})
+            _expandIri(typeScopedContext, vv, {base: true, vocab: true},
+              {...options, typeExpansion: true})
           )
         ]));
       }
       _validateTypeValue(value, options.isFrame);
       _addValue(
         expandedParent, '@type',
-        _asArray(value).map(v =>
-          _isString(v) ?
-            _expandIri(typeScopedContext, v,
-              {base: true, vocab: true}, options) : v),
+        _asArray(value).map(v => {
+          if(_isString(v)) {
+            const ve = _expandIri(typeScopedContext, v,
+              {base: true, vocab: true},
+              {...options, typeExpansion: true});
+            if(!_isAbsoluteIri(ve)) {
+              if(options.eventHandler) {
+                _handleEvent({
+                  event: {
+                    type: ['JsonLdEvent'],
+                    code: 'relative @type reference',
+                    level: 'warning',
+                    message: 'Relative @type reference found.',
+                    details: {
+                      type: v
+                    }
+                  },
+                  options
+                });
+              }
+            }
+            return ve;
+          }
+          return v;
+        }),
         {propertyIsArray: options.isFrame});
       continue;
     }
@@ -8915,8 +7720,7 @@ async function _expandObject({
         activeCtx,
         activeProperty,
         element: value,
-        options,
-        expansionMap
+        options
       }));
 
       // Expanded values must be node objects
@@ -8972,9 +7776,22 @@ async function _expandObject({
       value = _asArray(value).map(v => _isString(v) ? v.toLowerCase() : v);
 
       // ensure language tag matches BCP47
-      for(const lang of value) {
-        if(_isString(lang) && !lang.match(REGEX_BCP47)) {
-          console.warn(`@language must be valid BCP47: ${lang}`);
+      for(const language of value) {
+        if(_isString(language) && !language.match(REGEX_BCP47)) {
+          if(options.eventHandler) {
+            _handleEvent({
+              event: {
+                type: ['JsonLdEvent'],
+                code: 'invalid @language value',
+                level: 'warning',
+                message: '@language value must be valid BCP47.',
+                details: {
+                  language
+                }
+              },
+              options
+            });
+          }
         }
       }
 
@@ -9035,8 +7852,7 @@ async function _expandObject({
         activeProperty:
         '@reverse',
         element: value,
-        options,
-        expansionMap
+        options
       });
       // properties double-reversed
       if('@reverse' in expandedValue) {
@@ -9111,7 +7927,6 @@ async function _expandObject({
         options,
         activeProperty: key,
         value,
-        expansionMap,
         asGraph,
         indexKey,
         propertyIndex
@@ -9124,7 +7939,6 @@ async function _expandObject({
         options,
         activeProperty: key,
         value,
-        expansionMap,
         asGraph,
         indexKey: '@id'
       });
@@ -9136,7 +7950,6 @@ async function _expandObject({
         options,
         activeProperty: key,
         value,
-        expansionMap,
         asGraph: false,
         indexKey: '@type'
       });
@@ -9153,8 +7966,7 @@ async function _expandObject({
           activeProperty: nextActiveProperty,
           element: value,
           options,
-          insideList: isList,
-          expansionMap
+          insideList: isList
         });
       } else if(
         _getContextValue(activeCtx, key, '@type') === '@json') {
@@ -9169,29 +7981,18 @@ async function _expandObject({
           activeProperty: key,
           element: value,
           options,
-          insideList: false,
-          expansionMap
+          insideList: false
         });
       }
     }
 
     // drop null values if property is not @value
     if(expandedValue === null && expandedProperty !== '@value') {
-      // TODO: use `await` to support async
-      expandedValue = expansionMap({
-        unmappedValue: value,
-        expandedProperty,
-        activeCtx: termCtx,
-        activeProperty,
-        parent: element,
-        options,
-        insideList,
-        key,
-        expandedParent
-      });
-      if(expandedValue === undefined) {
-        continue;
-      }
+      // FIXME: event?
+      //unmappedValue: value,
+      //expandedProperty,
+      //key,
+      continue;
     }
 
     // convert expanded value to @list if container specifies it
@@ -9273,8 +8074,8 @@ async function _expandObject({
         options,
         insideList,
         typeScopedContext,
-        typeKey,
-        expansionMap});
+        typeKey
+      });
     }
   }
 }
@@ -9302,7 +8103,8 @@ function _expandValue({activeCtx, activeProperty, value, options}) {
   if(expandedProperty === '@id') {
     return _expandIri(activeCtx, value, {base: true}, options);
   } else if(expandedProperty === '@type') {
-    return _expandIri(activeCtx, value, {vocab: true, base: true}, options);
+    return _expandIri(activeCtx, value, {vocab: true, base: true},
+      {...options, typeExpansion: true});
   }
 
   // get type definition from context
@@ -9310,7 +8112,25 @@ function _expandValue({activeCtx, activeProperty, value, options}) {
 
   // do @id expansion (automatic for @graph)
   if((type === '@id' || expandedProperty === '@graph') && _isString(value)) {
-    return {'@id': _expandIri(activeCtx, value, {base: true}, options)};
+    const expandedValue = _expandIri(activeCtx, value, {base: true}, options);
+    // NOTE: handle spec edge case and avoid invalid {"@id": null}
+    if(expandedValue === null && value.match(REGEX_KEYWORD)) {
+      if(options.eventHandler) {
+        _handleEvent({
+          event: {
+            type: ['JsonLdEvent'],
+            code: 'reserved @id value',
+            level: 'warning',
+            message: 'Reserved @id found.',
+            details: {
+              id: activeProperty
+            }
+          },
+          options
+        });
+      }
+    }
+    return {'@id': expandedValue};
   }
   // do @id expansion w/vocab
   if(type === '@vocab' && _isString(value)) {
@@ -9381,6 +8201,22 @@ function _expandLanguageMap(activeCtx, languageMap, direction, options) {
       }
       const val = {'@value': item};
       if(expandedKey !== '@none') {
+        if(!key.match(REGEX_BCP47)) {
+          if(options.eventHandler) {
+            _handleEvent({
+              event: {
+                type: ['JsonLdEvent'],
+                code: 'invalid @language value',
+                level: 'warning',
+                message: '@language value must be valid BCP47.',
+                details: {
+                  language: key
+                }
+              },
+              options
+            });
+          }
+        }
         val['@language'] = key.toLowerCase();
       }
       if(direction) {
@@ -9392,9 +8228,9 @@ function _expandLanguageMap(activeCtx, languageMap, direction, options) {
   return rval;
 }
 
-async function _expandIndexMap(
-  {activeCtx, options, activeProperty, value, expansionMap, asGraph,
-    indexKey, propertyIndex}) {
+async function _expandIndexMap({
+  activeCtx, options, activeProperty, value, asGraph, indexKey, propertyIndex
+}) {
   const rval = [];
   const keys = Object.keys(value).sort();
   const isTypeIndex = indexKey === '@type';
@@ -9423,8 +8259,7 @@ async function _expandIndexMap(
       element: val,
       options,
       insideList: false,
-      insideIndex: true,
-      expansionMap
+      insideIndex: true
     });
 
     // expand for @type, but also for @none
@@ -9486,7 +8321,7 @@ async function _expandIndexMap(
   return rval;
 }
 
-},{"./JsonLdError":32,"./context":39,"./graphTypes":45,"./types":50,"./url":51,"./util":52}],42:[function(require,module,exports){
+},{"./JsonLdError":28,"./context":35,"./events":37,"./graphTypes":42,"./types":47,"./url":48,"./util":49}],39:[function(require,module,exports){
 /*
  * Copyright (c) 2017 Digital Bazaar, Inc. All rights reserved.
  */
@@ -9526,7 +8361,7 @@ api.flatten = input => {
   return flattened;
 };
 
-},{"./graphTypes":45,"./nodeMap":47}],43:[function(require,module,exports){
+},{"./graphTypes":42,"./nodeMap":44}],40:[function(require,module,exports){
 /*
  * Copyright (c) 2017 Digital Bazaar, Inc. All rights reserved.
  */
@@ -10353,7 +9188,7 @@ function _valueMatch(pattern, value) {
   return true;
 }
 
-},{"./JsonLdError":32,"./context":39,"./graphTypes":45,"./nodeMap":47,"./types":50,"./url":51,"./util":52}],44:[function(require,module,exports){
+},{"./JsonLdError":28,"./context":35,"./graphTypes":42,"./nodeMap":44,"./types":47,"./url":48,"./util":49}],41:[function(require,module,exports){
 /*
  * Copyright (c) 2017 Digital Bazaar, Inc. All rights reserved.
  */
@@ -10362,7 +9197,15 @@ function _valueMatch(pattern, value) {
 const JsonLdError = require('./JsonLdError');
 const graphTypes = require('./graphTypes');
 const types = require('./types');
-const util = require('./util');
+
+const {
+  REGEX_BCP47,
+  addValue: _addValue
+} = require('./util');
+
+const {
+  handleEvent: _handleEvent
+} = require('./events');
 
 // constants
 const {
@@ -10385,8 +9228,6 @@ const {
   XSD_STRING,
 } = require('./constants');
 
-const REGEX_BCP47 = /^[a-zA-Z]{1,8}(-[a-zA-Z0-9]{1,8})*$/;
-
 const api = {};
 module.exports = api;
 
@@ -10400,15 +9241,16 @@ module.exports = api;
  */
 api.fromRDF = async (
   dataset,
-  {
-    useRdfType = false,
-    useNativeTypes = false,
-    rdfDirection = null
-  }
+  options
 ) => {
   const defaultGraph = {};
   const graphMap = {'@default': defaultGraph};
   const referencedOnce = {};
+  const {
+    useRdfType = false,
+    useNativeTypes = false,
+    rdfDirection = null
+  } = options;
 
   for(const quad of dataset) {
     // TODO: change 'name' to 'graph'
@@ -10439,12 +9281,12 @@ api.fromRDF = async (
     }
 
     if(p === RDF_TYPE && !useRdfType && objectIsNode) {
-      util.addValue(node, '@type', o.value, {propertyIsArray: true});
+      _addValue(node, '@type', o.value, {propertyIsArray: true});
       continue;
     }
 
-    const value = _RDFToObject(o, useNativeTypes, rdfDirection);
-    util.addValue(node, p, value, {propertyIsArray: true});
+    const value = _RDFToObject(o, useNativeTypes, rdfDirection, options);
+    _addValue(node, p, value, {propertyIsArray: true});
 
     // object may be an RDF list/partial list node but we can't know easily
     // until all triples are read
@@ -10503,12 +9345,12 @@ api.fromRDF = async (
       }
 
       if(p === RDF_TYPE && !useRdfType && objectIsId) {
-        util.addValue(node, '@type', o.value, {propertyIsArray: true});
+        _addValue(node, '@type', o.value, {propertyIsArray: true});
         continue;
       }
 
       const value = _RDFToObject(o, useNativeTypes);
-      util.addValue(node, p, value, {propertyIsArray: true});
+      _addValue(node, p, value, {propertyIsArray: true});
 
       // object may be an RDF list/partial list node but we can't know easily
       // until all triples are read
@@ -10631,10 +9473,12 @@ api.fromRDF = async (
  *
  * @param o the RDF triple object to convert.
  * @param useNativeTypes true to output native types, false not to.
+ * @param rdfDirection text direction mode [null, i18n-datatype]
+ * @param options top level API options
  *
  * @return the JSON-LD object.
  */
-function _RDFToObject(o, useNativeTypes, rdfDirection) {
+function _RDFToObject(o, useNativeTypes, rdfDirection, options) {
   // convert NamedNode/BlankNode object to JSON-LD
   if(o.termType.endsWith('Node')) {
     return {'@id': o.value};
@@ -10645,6 +9489,22 @@ function _RDFToObject(o, useNativeTypes, rdfDirection) {
 
   // add language
   if(o.language) {
+    if(!o.language.match(REGEX_BCP47)) {
+      if(options.eventHandler) {
+        _handleEvent({
+          event: {
+            type: ['JsonLdEvent'],
+            code: 'invalid @language value',
+            level: 'warning',
+            message: '@language value must be valid BCP47.',
+            details: {
+              language: o.language
+            }
+          },
+          options
+        });
+      }
+    }
     rval['@language'] = o.language;
   } else {
     let type = o.datatype.value;
@@ -10690,7 +9550,20 @@ function _RDFToObject(o, useNativeTypes, rdfDirection) {
       if(language.length > 0) {
         rval['@language'] = language;
         if(!language.match(REGEX_BCP47)) {
-          console.warn(`@language must be valid BCP47: ${language}`);
+          if(options.eventHandler) {
+            _handleEvent({
+              event: {
+                type: ['JsonLdEvent'],
+                code: 'invalid @language value',
+                level: 'warning',
+                message: '@language value must be valid BCP47.',
+                details: {
+                  language
+                }
+              },
+              options
+            });
+          }
         }
       }
       rval['@direction'] = direction;
@@ -10702,7 +9575,7 @@ function _RDFToObject(o, useNativeTypes, rdfDirection) {
   return rval;
 }
 
-},{"./JsonLdError":32,"./constants":38,"./graphTypes":45,"./types":50,"./util":52}],45:[function(require,module,exports){
+},{"./JsonLdError":28,"./constants":34,"./events":37,"./graphTypes":42,"./types":47,"./util":49}],42:[function(require,module,exports){
 /*
  * Copyright (c) 2017 Digital Bazaar, Inc. All rights reserved.
  */
@@ -10811,11 +9684,12 @@ api.isSimpleGraph = v => {
 api.isBlankNode = v => {
   // Note: A value is a blank node if all of these hold true:
   // 1. It is an Object.
-  // 2. If it has an @id key its value begins with '_:'.
+  // 2. If it has an @id key that is not a string OR begins with '_:'.
   // 3. It has no keys OR is not a @value, @set, or @list.
   if(types.isObject(v)) {
     if('@id' in v) {
-      return (v['@id'].indexOf('_:') === 0);
+      const id = v['@id'];
+      return !types.isString(id) || id.indexOf('_:') === 0;
     }
     return (Object.keys(v).length === 0 ||
       !(('@value' in v) || ('@set' in v) || ('@list' in v)));
@@ -10823,14 +9697,14 @@ api.isBlankNode = v => {
   return false;
 };
 
-},{"./types":50}],46:[function(require,module,exports){
+},{"./types":47}],43:[function(require,module,exports){
 /**
  * A JavaScript implementation of the JSON-LD API.
  *
  * @author Dave Longley
  *
  * @license BSD 3-Clause License
- * Copyright (c) 2011-2019 Digital Bazaar, Inc.
+ * Copyright (c) 2011-2022 Digital Bazaar, Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -10906,6 +9780,16 @@ const {
   mergeNodeMaps: _mergeNodeMaps
 } = require('./nodeMap');
 
+const {
+  logEventHandler: _logEventHandler,
+  logWarningEventHandler: _logWarningEventHandler,
+  safeEventHandler: _safeEventHandler,
+  setDefaultEventHandler: _setDefaultEventHandler,
+  setupEventHandler: _setupEventHandler,
+  strictEventHandler: _strictEventHandler,
+  unhandledEventHandler: _unhandledEventHandler
+} = require('./events');
+
 /* eslint-disable indent */
 // attaches jsonld API to the given object
 const wrapper = function(jsonld) {
@@ -10936,15 +9820,8 @@ const _resolvedContextCache = new LRU({max: RESOLVED_CONTEXT_CACHE_MAX_SIZE});
  *          [skipExpansion] true to assume the input is expanded and skip
  *            expansion, false not to, defaults to false.
  *          [documentLoader(url, options)] the document loader.
- *          [expansionMap(info)] a function that can be used to custom map
- *            unmappable values (or to throw an error when they are detected);
- *            if this function returns `undefined` then the default behavior
- *            will be used.
  *          [framing] true if compaction is occuring during a framing operation.
- *          [compactionMap(info)] a function that can be used to custom map
- *            unmappable values (or to throw an error when they are detected);
- *            if this function returns `undefined` then the default behavior
- *            will be used.
+ *          [safe] true to use safe mode. (default: false)
  *          [contextResolver] internal use only.
  *
  * @return a Promise that resolves to the compacted output.
@@ -11002,8 +9879,7 @@ jsonld.compact = async function(input, ctx, options) {
   let compacted = await _compact({
     activeCtx,
     element: expanded,
-    options,
-    compactionMap: options.compactionMap
+    options
   });
 
   // perform clean up
@@ -11079,10 +9955,7 @@ jsonld.compact = async function(input, ctx, options) {
  *          [keepFreeFloatingNodes] true to keep free-floating nodes,
  *            false not to, defaults to false.
  *          [documentLoader(url, options)] the document loader.
- *          [expansionMap(info)] a function that can be used to custom map
- *            unmappable values (or to throw an error when they are detected);
- *            if this function returns `undefined` then the default behavior
- *            will be used.
+ *          [safe] true to use safe mode. (default: false)
  *          [contextResolver] internal use only.
  *
  * @return a Promise that resolves to the expanded output.
@@ -11098,9 +9971,6 @@ jsonld.expand = async function(input, options) {
     contextResolver: new ContextResolver(
       {sharedCache: _resolvedContextCache})
   });
-  if(options.expansionMap === false) {
-    options.expansionMap = undefined;
-  }
 
   // build set of objects that may have @contexts to resolve
   const toResolve = {};
@@ -11151,8 +10021,7 @@ jsonld.expand = async function(input, options) {
   let expanded = await _expand({
     activeCtx,
     element: toResolve.input,
-    options,
-    expansionMap: options.expansionMap
+    options
   });
 
   // optimize away @graph with no other properties
@@ -11235,6 +10104,7 @@ jsonld.flatten = async function(input, ctx, options) {
  *          [requireAll] default @requireAll flag (default: true).
  *          [omitDefault] default @omitDefault flag (default: false).
  *          [documentLoader(url, options)] the document loader.
+ *          [safe] true to use safe mode. (default: false)
  *          [contextResolver] internal use only.
  *
  * @return a Promise that resolves to the framed output.
@@ -11333,6 +10203,7 @@ jsonld.frame = async function(input, frame, options) {
  *          [base] the base IRI to use.
  *          [expandContext] a context to expand with.
  *          [documentLoader(url, options)] the document loader.
+ *          [safe] true to use safe mode. (default: false)
  *          [contextResolver] internal use only.
  *
  * @return a Promise that resolves to the linked output.
@@ -11353,12 +10224,18 @@ jsonld.link = async function(input, ctx, options) {
  * unless the 'inputFormat' option is used. The output is an RDF dataset
  * unless the 'format' option is used.
  *
+ * Note: Canonicalization sets `safe` to `true` and `base` to `null` by
+ * default in order to produce safe outputs and "fail closed" by default. This
+ * is different from the other API transformations in this version which
+ * allow unsafe defaults (for cryptographic usage) in order to comply with the
+ * JSON-LD 1.1 specification.
+ *
  * @param input the input to normalize as JSON-LD or as a format specified by
  *          the 'inputFormat' option.
  * @param [options] the options to use:
  *          [algorithm] the normalization algorithm to use, `URDNA2015` or
  *            `URGNA2012` (default: `URDNA2015`).
- *          [base] the base IRI to use.
+ *          [base] the base IRI to use (default: `null`).
  *          [expandContext] a context to expand with.
  *          [skipExpansion] true to assume the input is expanded and skip
  *            expansion, false not to, defaults to false.
@@ -11368,6 +10245,7 @@ jsonld.link = async function(input, ctx, options) {
  *            'application/n-quads' for N-Quads.
  *          [documentLoader(url, options)] the document loader.
  *          [useNative] true to use a native canonize algorithm
+ *          [safe] true to use safe mode. (default: true).
  *          [contextResolver] internal use only.
  *
  * @return a Promise that resolves to the normalized output.
@@ -11379,9 +10257,10 @@ jsonld.normalize = jsonld.canonize = async function(input, options) {
 
   // set default options
   options = _setDefaults(options, {
-    base: _isString(input) ? input : '',
+    base: _isString(input) ? input : null,
     algorithm: 'URDNA2015',
     skipExpansion: false,
+    safe: true,
     contextResolver: new ContextResolver(
       {sharedCache: _resolvedContextCache})
   });
@@ -11422,6 +10301,9 @@ jsonld.normalize = jsonld.canonize = async function(input, options) {
  *            (default: false).
  *          [useNativeTypes] true to convert XSD types into native types
  *            (boolean, integer, double), false not to (default: false).
+ *          [rdfDirection] 'i18n-datatype' to support RDF transformation of
+ *             @direction (default: null).
+ *          [safe] true to use safe mode. (default: false)
  *
  * @return a Promise that resolves to the JSON-LD document.
  */
@@ -11471,6 +10353,7 @@ jsonld.fromRDF = async function(dataset, options) {
  *          [produceGeneralizedRdf] true to output generalized RDF, false
  *            to produce only standard RDF (default: false).
  *          [documentLoader(url, options)] the document loader.
+ *          [safe] true to use safe mode. (default: false)
  *          [contextResolver] internal use only.
  *
  * @return a Promise that resolves to the RDF dataset.
@@ -11563,6 +10446,7 @@ jsonld.createNodeMap = async function(input, options) {
  *            new properties where a node is in the `object` position
  *            (default: true).
  *          [documentLoader(url, options)] the document loader.
+ *          [safe] true to use safe mode. (default: false)
  *          [contextResolver] internal use only.
  *
  * @return a Promise that resolves to the merged output.
@@ -11725,6 +10609,7 @@ jsonld.get = async function(url, options) {
  * @param localCtx the local context to process.
  * @param [options] the options to use:
  *          [documentLoader(url, options)] the document loader.
+ *          [safe] true to use safe mode. (default: false)
  *          [contextResolver] internal use only.
  *
  * @return a Promise that resolves to the new active context.
@@ -11810,6 +10695,14 @@ jsonld.registerRDFParser('application/nquads', NQuads.parse);
 /* URL API */
 jsonld.url = require('./url');
 
+/* Events API and handlers */
+jsonld.logEventHandler = _logEventHandler;
+jsonld.logWarningEventHandler = _logWarningEventHandler;
+jsonld.safeEventHandler = _safeEventHandler;
+jsonld.setDefaultEventHandler = _setDefaultEventHandler;
+jsonld.strictEventHandler = _strictEventHandler;
+jsonld.unhandledEventHandler = _unhandledEventHandler;
+
 /* Utility API */
 jsonld.util = util;
 // backwards compatibility
@@ -11831,7 +10724,24 @@ function _setDefaults(options, {
   documentLoader = jsonld.documentLoader,
   ...defaults
 }) {
-  return Object.assign({}, {documentLoader}, defaults, options);
+  // fail if obsolete options present
+  if(options && 'compactionMap' in options) {
+    throw new JsonLdError(
+      '"compactionMap" not supported.',
+      'jsonld.OptionsError');
+  }
+  if(options && 'expansionMap' in options) {
+    throw new JsonLdError(
+      '"expansionMap" not supported.',
+      'jsonld.OptionsError');
+  }
+  return Object.assign(
+    {},
+    {documentLoader},
+    defaults,
+    options,
+    {eventHandler: _setupEventHandler({options})}
+  );
 }
 
 // end of jsonld API `wrapper` factory
@@ -11852,7 +10762,7 @@ wrapper(factory);
 // export API
 module.exports = factory;
 
-},{"./ContextResolver":31,"./JsonLdError":32,"./JsonLdProcessor":33,"./NQuads":34,"./RequestQueue":35,"./compact":37,"./context":39,"./expand":41,"./flatten":42,"./frame":43,"./fromRdf":44,"./graphTypes":45,"./nodeMap":47,"./platform":48,"./toRdf":49,"./types":50,"./url":51,"./util":52,"lru-cache":53,"rdf-canonize":66}],47:[function(require,module,exports){
+},{"./ContextResolver":27,"./JsonLdError":28,"./JsonLdProcessor":29,"./NQuads":30,"./RequestQueue":31,"./compact":33,"./context":35,"./events":37,"./expand":38,"./flatten":39,"./frame":40,"./fromRdf":41,"./graphTypes":42,"./nodeMap":44,"./platform":45,"./toRdf":46,"./types":47,"./url":48,"./util":49,"lru-cache":50,"rdf-canonize":64}],44:[function(require,module,exports){
 /*
  * Copyright (c) 2017 Digital Bazaar, Inc. All rights reserved.
  */
@@ -12144,7 +11054,7 @@ api.mergeNodeMaps = graphs => {
   return defaultGraph;
 };
 
-},{"./JsonLdError":32,"./context":39,"./graphTypes":45,"./types":50,"./util":52}],48:[function(require,module,exports){
+},{"./JsonLdError":28,"./context":35,"./graphTypes":42,"./types":47,"./util":49}],45:[function(require,module,exports){
 /*
  * Copyright (c) 2021 Digital Bazaar, Inc. All rights reserved.
  */
@@ -12185,7 +11095,7 @@ api.setupGlobals = function(jsonld) {
   }
 };
 
-},{"./documentLoaders/xhr":40}],49:[function(require,module,exports){
+},{"./documentLoaders/xhr":36}],46:[function(require,module,exports){
 /*
  * Copyright (c) 2017 Digital Bazaar, Inc. All rights reserved.
  */
@@ -12197,6 +11107,10 @@ const graphTypes = require('./graphTypes');
 const jsonCanonicalize = require('canonicalize');
 const types = require('./types');
 const util = require('./util');
+
+const {
+  handleEvent: _handleEvent
+} = require('./events');
 
 const {
   // RDF,
@@ -12254,6 +11168,20 @@ api.toRDF = (input, options) => {
       graphTerm.value = graphName;
     } else {
       // skip relative IRIs (not valid RDF)
+      if(options.eventHandler) {
+        _handleEvent({
+          event: {
+            type: ['JsonLdEvent'],
+            code: 'relative graph reference',
+            level: 'warning',
+            message: 'Relative graph reference found.',
+            details: {
+              graph: graphName
+            }
+          },
+          options
+        });
+      }
       continue;
     }
     _graphToRDF(dataset, nodeMap[graphName], graphTerm, issuer, options);
@@ -12295,6 +11223,20 @@ function _graphToRDF(dataset, graph, graphTerm, issuer, options) {
 
         // skip relative IRI subjects (not valid RDF)
         if(!_isAbsoluteIri(id)) {
+          if(options.eventHandler) {
+            _handleEvent({
+              event: {
+                type: ['JsonLdEvent'],
+                code: 'relative subject reference',
+                level: 'warning',
+                message: 'Relative subject reference found.',
+                details: {
+                  subject: id
+                }
+              },
+              options
+            });
+          }
           continue;
         }
 
@@ -12306,18 +11248,48 @@ function _graphToRDF(dataset, graph, graphTerm, issuer, options) {
 
         // skip relative IRI predicates (not valid RDF)
         if(!_isAbsoluteIri(property)) {
+          if(options.eventHandler) {
+            _handleEvent({
+              event: {
+                type: ['JsonLdEvent'],
+                code: 'relative predicate reference',
+                level: 'warning',
+                message: 'Relative predicate reference found.',
+                details: {
+                  predicate: property
+                }
+              },
+              options
+            });
+          }
           continue;
         }
 
         // skip blank node predicates unless producing generalized RDF
         if(predicate.termType === 'BlankNode' &&
           !options.produceGeneralizedRdf) {
+          if(options.eventHandler) {
+            _handleEvent({
+              event: {
+                type: ['JsonLdEvent'],
+                code: 'blank node predicate',
+                level: 'warning',
+                message: 'Dropping blank node predicate.',
+                details: {
+                  // FIXME: add better issuer API to get reverse mapping
+                  property: issuer.getOldIds()
+                    .find(key => issuer.getId(key) === property)
+                }
+              },
+              options
+            });
+          }
           continue;
         }
 
         // convert list, value or node object to triple
-        const object =
-          _objectToRDF(item, issuer, dataset, graphTerm, options.rdfDirection);
+        const object = _objectToRDF(
+          item, issuer, dataset, graphTerm, options.rdfDirection, options);
         // skip null objects (they are relative IRIs)
         if(object) {
           dataset.push({
@@ -12340,10 +11312,11 @@ function _graphToRDF(dataset, graph, graphTerm, issuer, options) {
  * @param issuer a IdentifierIssuer for assigning blank node names.
  * @param dataset the array of quads to append to.
  * @param graphTerm the graph term for each quad.
+ * @param options the RDF serialization options.
  *
  * @return the head of the list.
  */
-function _listToRDF(list, issuer, dataset, graphTerm, rdfDirection) {
+function _listToRDF(list, issuer, dataset, graphTerm, rdfDirection, options) {
   const first = {termType: 'NamedNode', value: RDF_FIRST};
   const rest = {termType: 'NamedNode', value: RDF_REST};
   const nil = {termType: 'NamedNode', value: RDF_NIL};
@@ -12354,7 +11327,8 @@ function _listToRDF(list, issuer, dataset, graphTerm, rdfDirection) {
   let subject = result;
 
   for(const item of list) {
-    const object = _objectToRDF(item, issuer, dataset, graphTerm, rdfDirection);
+    const object = _objectToRDF(
+      item, issuer, dataset, graphTerm, rdfDirection, options);
     const next = {termType: 'BlankNode', value: issuer.getId()};
     dataset.push({
       subject,
@@ -12373,7 +11347,8 @@ function _listToRDF(list, issuer, dataset, graphTerm, rdfDirection) {
 
   // Tail of list
   if(last) {
-    const object = _objectToRDF(last, issuer, dataset, graphTerm, rdfDirection);
+    const object = _objectToRDF(
+      last, issuer, dataset, graphTerm, rdfDirection, options);
     dataset.push({
       subject,
       predicate: first,
@@ -12399,10 +11374,13 @@ function _listToRDF(list, issuer, dataset, graphTerm, rdfDirection) {
  * @param issuer a IdentifierIssuer for assigning blank node names.
  * @param dataset the dataset to append RDF quads to.
  * @param graphTerm the graph term for each quad.
+ * @param options the RDF serialization options.
  *
  * @return the RDF literal or RDF resource.
  */
-function _objectToRDF(item, issuer, dataset, graphTerm, rdfDirection) {
+function _objectToRDF(
+  item, issuer, dataset, graphTerm, rdfDirection, options
+) {
   const object = {};
 
   // convert value object to RDF
@@ -12448,8 +11426,8 @@ function _objectToRDF(item, issuer, dataset, graphTerm, rdfDirection) {
       object.datatype.value = datatype || XSD_STRING;
     }
   } else if(graphTypes.isList(item)) {
-    const _list =
-      _listToRDF(item['@list'], issuer, dataset, graphTerm, rdfDirection);
+    const _list = _listToRDF(
+      item['@list'], issuer, dataset, graphTerm, rdfDirection, options);
     object.termType = _list.termType;
     object.value = _list.value;
   } else {
@@ -12461,13 +11439,27 @@ function _objectToRDF(item, issuer, dataset, graphTerm, rdfDirection) {
 
   // skip relative IRIs, not valid RDF
   if(object.termType === 'NamedNode' && !_isAbsoluteIri(object.value)) {
+    if(options.eventHandler) {
+      _handleEvent({
+        event: {
+          type: ['JsonLdEvent'],
+          code: 'relative object reference',
+          level: 'warning',
+          message: 'Relative object reference found.',
+          details: {
+            object: object.value
+          }
+        },
+        options
+      });
+    }
     return null;
   }
 
   return object;
 }
 
-},{"./constants":38,"./context":39,"./graphTypes":45,"./nodeMap":47,"./types":50,"./url":51,"./util":52,"canonicalize":13}],50:[function(require,module,exports){
+},{"./constants":34,"./context":35,"./events":37,"./graphTypes":42,"./nodeMap":44,"./types":47,"./url":48,"./util":49,"canonicalize":9}],47:[function(require,module,exports){
 /*
  * Copyright (c) 2017 Digital Bazaar, Inc. All rights reserved.
  */
@@ -12561,7 +11553,7 @@ api.isString = v => (typeof v === 'string' ||
  */
 api.isUndefined = v => typeof v === 'undefined';
 
-},{}],51:[function(require,module,exports){
+},{}],48:[function(require,module,exports){
 /*
  * Copyright (c) 2017 Digital Bazaar, Inc. All rights reserved.
  */
@@ -12864,7 +11856,7 @@ api.isAbsolute = v => types.isString(v) && isAbsoluteRegex.test(v);
  */
 api.isRelative = v => types.isString(v);
 
-},{"./types":50}],52:[function(require,module,exports){
+},{"./types":47}],49:[function(require,module,exports){
 /*
  * Copyright (c) 2017-2019 Digital Bazaar, Inc. All rights reserved.
  */
@@ -12877,10 +11869,12 @@ const IdentifierIssuer = require('rdf-canonize').IdentifierIssuer;
 const JsonLdError = require('./JsonLdError');
 
 // constants
+const REGEX_BCP47 = /^[a-zA-Z]{1,8}(-[a-zA-Z0-9]{1,8})*$/;
 const REGEX_LINK_HEADERS = /(?:<[^>]*?>|"[^"]*?"|[^,])+/g;
 const REGEX_LINK_HEADER = /\s*<([^>]*?)>\s*(?:;\s*(.*))?/;
 const REGEX_LINK_HEADER_PARAMS =
   /(.*?)=(?:(?:"([^"]*?)")|([^"]*?))\s*(?:(?:;\s*)|$)/g;
+const REGEX_KEYWORD = /^@[a-zA-Z]+$/;
 
 const DEFAULTS = {
   headers: {
@@ -12891,6 +11885,8 @@ const DEFAULTS = {
 const api = {};
 module.exports = api;
 api.IdentifierIssuer = IdentifierIssuer;
+api.REGEX_BCP47 = REGEX_BCP47;
+api.REGEX_KEYWORD = REGEX_KEYWORD;
 
 /**
  * Clones an object, array, Map, Set, or string/number. If a typed JavaScript
@@ -13317,7 +12313,7 @@ function _labelBlankNodes(issuer, element) {
   return element;
 }
 
-},{"./JsonLdError":32,"./graphTypes":45,"./types":50,"rdf-canonize":66}],53:[function(require,module,exports){
+},{"./JsonLdError":28,"./graphTypes":42,"./types":47,"rdf-canonize":64}],50:[function(require,module,exports){
 'use strict'
 
 // A linked list to keep track of recently-used-ness
@@ -13653,7 +12649,7 @@ const forEachStep = (self, fn, node, thisp) => {
 
 module.exports = LRUCache
 
-},{"yallist":121}],54:[function(require,module,exports){
+},{"yallist":121}],51:[function(require,module,exports){
 // Replace local require by a lazy loader
 var globalRequire = require;
 require = function () {};
@@ -13681,7 +12677,7 @@ Object.keys(exports).forEach(function (submodule) {
   });
 });
 
-},{"./lib/N3Lexer":55,"./lib/N3Parser":56,"./lib/N3Store":57,"./lib/N3StreamParser":58,"./lib/N3StreamWriter":59,"./lib/N3Util":60,"./lib/N3Writer":61}],55:[function(require,module,exports){
+},{"./lib/N3Lexer":52,"./lib/N3Parser":53,"./lib/N3Store":54,"./lib/N3StreamParser":55,"./lib/N3StreamWriter":56,"./lib/N3Util":57,"./lib/N3Writer":58}],52:[function(require,module,exports){
 (function (setImmediate){(function (){
 // **N3Lexer** tokenizes N3 documents.
 var fromCharCode = String.fromCharCode;
@@ -14104,7 +13100,7 @@ N3Lexer.prototype = {
 module.exports = N3Lexer;
 
 }).call(this)}).call(this,require("timers").setImmediate)
-},{"timers":114}],56:[function(require,module,exports){
+},{"timers":111}],53:[function(require,module,exports){
 // **N3Parser** parses N3 documents.
 var N3Lexer = require('./N3Lexer');
 
@@ -15025,7 +14021,7 @@ function noop() {}
 // ## Exports
 module.exports = N3Parser;
 
-},{"./N3Lexer":55}],57:[function(require,module,exports){
+},{"./N3Lexer":52}],54:[function(require,module,exports){
 // **N3Store** objects store N3 triples by graph in memory.
 
 var expandPrefixedName = require('./N3Util').expandPrefixedName;
@@ -15813,7 +14809,7 @@ function isString(s) {
 // ## Exports
 module.exports = N3Store;
 
-},{"./N3Util":60}],58:[function(require,module,exports){
+},{"./N3Util":57}],55:[function(require,module,exports){
 // **N3StreamParser** parses an N3 stream into a triple stream.
 var Transform = require('stream').Transform,
     util = require('util'),
@@ -15853,7 +14849,7 @@ util.inherits(N3StreamParser, Transform);
 // ## Exports
 module.exports = N3StreamParser;
 
-},{"./N3Parser.js":56,"stream":78,"util":8}],59:[function(require,module,exports){
+},{"./N3Parser.js":53,"stream":76,"util":117}],56:[function(require,module,exports){
 // **N3StreamWriter** serializes a triple stream into an N3 stream.
 var Transform = require('stream').Transform,
     util = require('util'),
@@ -15884,7 +14880,7 @@ util.inherits(N3StreamWriter, Transform);
 // ## Exports
 module.exports = N3StreamWriter;
 
-},{"./N3Writer.js":61,"stream":78,"util":8}],60:[function(require,module,exports){
+},{"./N3Writer.js":58,"stream":76,"util":117}],57:[function(require,module,exports){
 // **N3Util** provides N3 utility functions.
 
 var Xsd = 'http://www.w3.org/2001/XMLSchema#';
@@ -16033,7 +15029,7 @@ var N3Util = {
 // ## Exports
 module.exports = N3Util;
 
-},{}],61:[function(require,module,exports){
+},{}],58:[function(require,module,exports){
 // **N3Writer** writes N3 documents.
 
 // Matches a literal as represented in memory by the N3 library
@@ -16372,7 +15368,7 @@ function characterReplacer(character) {
 // ## Exports
 module.exports = N3Writer;
 
-},{}],62:[function(require,module,exports){
+},{}],59:[function(require,module,exports){
 // shim for using process in browser
 var process = module.exports = {};
 
@@ -16558,7 +15554,544 @@ process.chdir = function (dir) {
 };
 process.umask = function() { return 0; };
 
-},{}],63:[function(require,module,exports){
+},{}],60:[function(require,module,exports){
+(function (global){(function (){
+/*! https://mths.be/punycode v1.4.1 by @mathias */
+;(function(root) {
+
+	/** Detect free variables */
+	var freeExports = typeof exports == 'object' && exports &&
+		!exports.nodeType && exports;
+	var freeModule = typeof module == 'object' && module &&
+		!module.nodeType && module;
+	var freeGlobal = typeof global == 'object' && global;
+	if (
+		freeGlobal.global === freeGlobal ||
+		freeGlobal.window === freeGlobal ||
+		freeGlobal.self === freeGlobal
+	) {
+		root = freeGlobal;
+	}
+
+	/**
+	 * The `punycode` object.
+	 * @name punycode
+	 * @type Object
+	 */
+	var punycode,
+
+	/** Highest positive signed 32-bit float value */
+	maxInt = 2147483647, // aka. 0x7FFFFFFF or 2^31-1
+
+	/** Bootstring parameters */
+	base = 36,
+	tMin = 1,
+	tMax = 26,
+	skew = 38,
+	damp = 700,
+	initialBias = 72,
+	initialN = 128, // 0x80
+	delimiter = '-', // '\x2D'
+
+	/** Regular expressions */
+	regexPunycode = /^xn--/,
+	regexNonASCII = /[^\x20-\x7E]/, // unprintable ASCII chars + non-ASCII chars
+	regexSeparators = /[\x2E\u3002\uFF0E\uFF61]/g, // RFC 3490 separators
+
+	/** Error messages */
+	errors = {
+		'overflow': 'Overflow: input needs wider integers to process',
+		'not-basic': 'Illegal input >= 0x80 (not a basic code point)',
+		'invalid-input': 'Invalid input'
+	},
+
+	/** Convenience shortcuts */
+	baseMinusTMin = base - tMin,
+	floor = Math.floor,
+	stringFromCharCode = String.fromCharCode,
+
+	/** Temporary variable */
+	key;
+
+	/*--------------------------------------------------------------------------*/
+
+	/**
+	 * A generic error utility function.
+	 * @private
+	 * @param {String} type The error type.
+	 * @returns {Error} Throws a `RangeError` with the applicable error message.
+	 */
+	function error(type) {
+		throw new RangeError(errors[type]);
+	}
+
+	/**
+	 * A generic `Array#map` utility function.
+	 * @private
+	 * @param {Array} array The array to iterate over.
+	 * @param {Function} callback The function that gets called for every array
+	 * item.
+	 * @returns {Array} A new array of values returned by the callback function.
+	 */
+	function map(array, fn) {
+		var length = array.length;
+		var result = [];
+		while (length--) {
+			result[length] = fn(array[length]);
+		}
+		return result;
+	}
+
+	/**
+	 * A simple `Array#map`-like wrapper to work with domain name strings or email
+	 * addresses.
+	 * @private
+	 * @param {String} domain The domain name or email address.
+	 * @param {Function} callback The function that gets called for every
+	 * character.
+	 * @returns {Array} A new string of characters returned by the callback
+	 * function.
+	 */
+	function mapDomain(string, fn) {
+		var parts = string.split('@');
+		var result = '';
+		if (parts.length > 1) {
+			// In email addresses, only the domain name should be punycoded. Leave
+			// the local part (i.e. everything up to `@`) intact.
+			result = parts[0] + '@';
+			string = parts[1];
+		}
+		// Avoid `split(regex)` for IE8 compatibility. See #17.
+		string = string.replace(regexSeparators, '\x2E');
+		var labels = string.split('.');
+		var encoded = map(labels, fn).join('.');
+		return result + encoded;
+	}
+
+	/**
+	 * Creates an array containing the numeric code points of each Unicode
+	 * character in the string. While JavaScript uses UCS-2 internally,
+	 * this function will convert a pair of surrogate halves (each of which
+	 * UCS-2 exposes as separate characters) into a single code point,
+	 * matching UTF-16.
+	 * @see `punycode.ucs2.encode`
+	 * @see <https://mathiasbynens.be/notes/javascript-encoding>
+	 * @memberOf punycode.ucs2
+	 * @name decode
+	 * @param {String} string The Unicode input string (UCS-2).
+	 * @returns {Array} The new array of code points.
+	 */
+	function ucs2decode(string) {
+		var output = [],
+		    counter = 0,
+		    length = string.length,
+		    value,
+		    extra;
+		while (counter < length) {
+			value = string.charCodeAt(counter++);
+			if (value >= 0xD800 && value <= 0xDBFF && counter < length) {
+				// high surrogate, and there is a next character
+				extra = string.charCodeAt(counter++);
+				if ((extra & 0xFC00) == 0xDC00) { // low surrogate
+					output.push(((value & 0x3FF) << 10) + (extra & 0x3FF) + 0x10000);
+				} else {
+					// unmatched surrogate; only append this code unit, in case the next
+					// code unit is the high surrogate of a surrogate pair
+					output.push(value);
+					counter--;
+				}
+			} else {
+				output.push(value);
+			}
+		}
+		return output;
+	}
+
+	/**
+	 * Creates a string based on an array of numeric code points.
+	 * @see `punycode.ucs2.decode`
+	 * @memberOf punycode.ucs2
+	 * @name encode
+	 * @param {Array} codePoints The array of numeric code points.
+	 * @returns {String} The new Unicode string (UCS-2).
+	 */
+	function ucs2encode(array) {
+		return map(array, function(value) {
+			var output = '';
+			if (value > 0xFFFF) {
+				value -= 0x10000;
+				output += stringFromCharCode(value >>> 10 & 0x3FF | 0xD800);
+				value = 0xDC00 | value & 0x3FF;
+			}
+			output += stringFromCharCode(value);
+			return output;
+		}).join('');
+	}
+
+	/**
+	 * Converts a basic code point into a digit/integer.
+	 * @see `digitToBasic()`
+	 * @private
+	 * @param {Number} codePoint The basic numeric code point value.
+	 * @returns {Number} The numeric value of a basic code point (for use in
+	 * representing integers) in the range `0` to `base - 1`, or `base` if
+	 * the code point does not represent a value.
+	 */
+	function basicToDigit(codePoint) {
+		if (codePoint - 48 < 10) {
+			return codePoint - 22;
+		}
+		if (codePoint - 65 < 26) {
+			return codePoint - 65;
+		}
+		if (codePoint - 97 < 26) {
+			return codePoint - 97;
+		}
+		return base;
+	}
+
+	/**
+	 * Converts a digit/integer into a basic code point.
+	 * @see `basicToDigit()`
+	 * @private
+	 * @param {Number} digit The numeric value of a basic code point.
+	 * @returns {Number} The basic code point whose value (when used for
+	 * representing integers) is `digit`, which needs to be in the range
+	 * `0` to `base - 1`. If `flag` is non-zero, the uppercase form is
+	 * used; else, the lowercase form is used. The behavior is undefined
+	 * if `flag` is non-zero and `digit` has no uppercase form.
+	 */
+	function digitToBasic(digit, flag) {
+		//  0..25 map to ASCII a..z or A..Z
+		// 26..35 map to ASCII 0..9
+		return digit + 22 + 75 * (digit < 26) - ((flag != 0) << 5);
+	}
+
+	/**
+	 * Bias adaptation function as per section 3.4 of RFC 3492.
+	 * https://tools.ietf.org/html/rfc3492#section-3.4
+	 * @private
+	 */
+	function adapt(delta, numPoints, firstTime) {
+		var k = 0;
+		delta = firstTime ? floor(delta / damp) : delta >> 1;
+		delta += floor(delta / numPoints);
+		for (/* no initialization */; delta > baseMinusTMin * tMax >> 1; k += base) {
+			delta = floor(delta / baseMinusTMin);
+		}
+		return floor(k + (baseMinusTMin + 1) * delta / (delta + skew));
+	}
+
+	/**
+	 * Converts a Punycode string of ASCII-only symbols to a string of Unicode
+	 * symbols.
+	 * @memberOf punycode
+	 * @param {String} input The Punycode string of ASCII-only symbols.
+	 * @returns {String} The resulting string of Unicode symbols.
+	 */
+	function decode(input) {
+		// Don't use UCS-2
+		var output = [],
+		    inputLength = input.length,
+		    out,
+		    i = 0,
+		    n = initialN,
+		    bias = initialBias,
+		    basic,
+		    j,
+		    index,
+		    oldi,
+		    w,
+		    k,
+		    digit,
+		    t,
+		    /** Cached calculation results */
+		    baseMinusT;
+
+		// Handle the basic code points: let `basic` be the number of input code
+		// points before the last delimiter, or `0` if there is none, then copy
+		// the first basic code points to the output.
+
+		basic = input.lastIndexOf(delimiter);
+		if (basic < 0) {
+			basic = 0;
+		}
+
+		for (j = 0; j < basic; ++j) {
+			// if it's not a basic code point
+			if (input.charCodeAt(j) >= 0x80) {
+				error('not-basic');
+			}
+			output.push(input.charCodeAt(j));
+		}
+
+		// Main decoding loop: start just after the last delimiter if any basic code
+		// points were copied; start at the beginning otherwise.
+
+		for (index = basic > 0 ? basic + 1 : 0; index < inputLength; /* no final expression */) {
+
+			// `index` is the index of the next character to be consumed.
+			// Decode a generalized variable-length integer into `delta`,
+			// which gets added to `i`. The overflow checking is easier
+			// if we increase `i` as we go, then subtract off its starting
+			// value at the end to obtain `delta`.
+			for (oldi = i, w = 1, k = base; /* no condition */; k += base) {
+
+				if (index >= inputLength) {
+					error('invalid-input');
+				}
+
+				digit = basicToDigit(input.charCodeAt(index++));
+
+				if (digit >= base || digit > floor((maxInt - i) / w)) {
+					error('overflow');
+				}
+
+				i += digit * w;
+				t = k <= bias ? tMin : (k >= bias + tMax ? tMax : k - bias);
+
+				if (digit < t) {
+					break;
+				}
+
+				baseMinusT = base - t;
+				if (w > floor(maxInt / baseMinusT)) {
+					error('overflow');
+				}
+
+				w *= baseMinusT;
+
+			}
+
+			out = output.length + 1;
+			bias = adapt(i - oldi, out, oldi == 0);
+
+			// `i` was supposed to wrap around from `out` to `0`,
+			// incrementing `n` each time, so we'll fix that now:
+			if (floor(i / out) > maxInt - n) {
+				error('overflow');
+			}
+
+			n += floor(i / out);
+			i %= out;
+
+			// Insert `n` at position `i` of the output
+			output.splice(i++, 0, n);
+
+		}
+
+		return ucs2encode(output);
+	}
+
+	/**
+	 * Converts a string of Unicode symbols (e.g. a domain name label) to a
+	 * Punycode string of ASCII-only symbols.
+	 * @memberOf punycode
+	 * @param {String} input The string of Unicode symbols.
+	 * @returns {String} The resulting Punycode string of ASCII-only symbols.
+	 */
+	function encode(input) {
+		var n,
+		    delta,
+		    handledCPCount,
+		    basicLength,
+		    bias,
+		    j,
+		    m,
+		    q,
+		    k,
+		    t,
+		    currentValue,
+		    output = [],
+		    /** `inputLength` will hold the number of code points in `input`. */
+		    inputLength,
+		    /** Cached calculation results */
+		    handledCPCountPlusOne,
+		    baseMinusT,
+		    qMinusT;
+
+		// Convert the input in UCS-2 to Unicode
+		input = ucs2decode(input);
+
+		// Cache the length
+		inputLength = input.length;
+
+		// Initialize the state
+		n = initialN;
+		delta = 0;
+		bias = initialBias;
+
+		// Handle the basic code points
+		for (j = 0; j < inputLength; ++j) {
+			currentValue = input[j];
+			if (currentValue < 0x80) {
+				output.push(stringFromCharCode(currentValue));
+			}
+		}
+
+		handledCPCount = basicLength = output.length;
+
+		// `handledCPCount` is the number of code points that have been handled;
+		// `basicLength` is the number of basic code points.
+
+		// Finish the basic string - if it is not empty - with a delimiter
+		if (basicLength) {
+			output.push(delimiter);
+		}
+
+		// Main encoding loop:
+		while (handledCPCount < inputLength) {
+
+			// All non-basic code points < n have been handled already. Find the next
+			// larger one:
+			for (m = maxInt, j = 0; j < inputLength; ++j) {
+				currentValue = input[j];
+				if (currentValue >= n && currentValue < m) {
+					m = currentValue;
+				}
+			}
+
+			// Increase `delta` enough to advance the decoder's <n,i> state to <m,0>,
+			// but guard against overflow
+			handledCPCountPlusOne = handledCPCount + 1;
+			if (m - n > floor((maxInt - delta) / handledCPCountPlusOne)) {
+				error('overflow');
+			}
+
+			delta += (m - n) * handledCPCountPlusOne;
+			n = m;
+
+			for (j = 0; j < inputLength; ++j) {
+				currentValue = input[j];
+
+				if (currentValue < n && ++delta > maxInt) {
+					error('overflow');
+				}
+
+				if (currentValue == n) {
+					// Represent delta as a generalized variable-length integer
+					for (q = delta, k = base; /* no condition */; k += base) {
+						t = k <= bias ? tMin : (k >= bias + tMax ? tMax : k - bias);
+						if (q < t) {
+							break;
+						}
+						qMinusT = q - t;
+						baseMinusT = base - t;
+						output.push(
+							stringFromCharCode(digitToBasic(t + qMinusT % baseMinusT, 0))
+						);
+						q = floor(qMinusT / baseMinusT);
+					}
+
+					output.push(stringFromCharCode(digitToBasic(q, 0)));
+					bias = adapt(delta, handledCPCountPlusOne, handledCPCount == basicLength);
+					delta = 0;
+					++handledCPCount;
+				}
+			}
+
+			++delta;
+			++n;
+
+		}
+		return output.join('');
+	}
+
+	/**
+	 * Converts a Punycode string representing a domain name or an email address
+	 * to Unicode. Only the Punycoded parts of the input will be converted, i.e.
+	 * it doesn't matter if you call it on a string that has already been
+	 * converted to Unicode.
+	 * @memberOf punycode
+	 * @param {String} input The Punycoded domain name or email address to
+	 * convert to Unicode.
+	 * @returns {String} The Unicode representation of the given Punycode
+	 * string.
+	 */
+	function toUnicode(input) {
+		return mapDomain(input, function(string) {
+			return regexPunycode.test(string)
+				? decode(string.slice(4).toLowerCase())
+				: string;
+		});
+	}
+
+	/**
+	 * Converts a Unicode string representing a domain name or an email address to
+	 * Punycode. Only the non-ASCII parts of the domain name will be converted,
+	 * i.e. it doesn't matter if you call it with a domain that's already in
+	 * ASCII.
+	 * @memberOf punycode
+	 * @param {String} input The domain name or email address to convert, as a
+	 * Unicode string.
+	 * @returns {String} The Punycode representation of the given domain name or
+	 * email address.
+	 */
+	function toASCII(input) {
+		return mapDomain(input, function(string) {
+			return regexNonASCII.test(string)
+				? 'xn--' + encode(string)
+				: string;
+		});
+	}
+
+	/*--------------------------------------------------------------------------*/
+
+	/** Define the public API */
+	punycode = {
+		/**
+		 * A string representing the current Punycode.js version number.
+		 * @memberOf punycode
+		 * @type String
+		 */
+		'version': '1.4.1',
+		/**
+		 * An object of methods to convert from JavaScript's internal character
+		 * representation (UCS-2) to Unicode code points, and back.
+		 * @see <https://mathiasbynens.be/notes/javascript-encoding>
+		 * @memberOf punycode
+		 * @type Object
+		 */
+		'ucs2': {
+			'decode': ucs2decode,
+			'encode': ucs2encode
+		},
+		'decode': decode,
+		'encode': encode,
+		'toASCII': toASCII,
+		'toUnicode': toUnicode
+	};
+
+	/** Expose `punycode` */
+	// Some AMD build optimizers, like r.js, check for specific condition patterns
+	// like the following:
+	if (
+		typeof define == 'function' &&
+		typeof define.amd == 'object' &&
+		define.amd
+	) {
+		define('punycode', function() {
+			return punycode;
+		});
+	} else if (freeExports && freeModule) {
+		if (module.exports == freeExports) {
+			// in Node.js, io.js, or RingoJS v0.8.0+
+			freeModule.exports = punycode;
+		} else {
+			// in Narwhal or RingoJS v0.7.0-
+			for (key in punycode) {
+				punycode.hasOwnProperty(key) && (freeExports[key] = punycode[key]);
+			}
+		}
+	} else {
+		// in Rhino or a web browser
+		root.punycode = punycode;
+	}
+
+}(this));
+
+}).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{}],61:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -16644,7 +16177,7 @@ var isArray = Array.isArray || function (xs) {
   return Object.prototype.toString.call(xs) === '[object Array]';
 };
 
-},{}],64:[function(require,module,exports){
+},{}],62:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -16731,13 +16264,13 @@ var objectKeys = Object.keys || function (obj) {
   return res;
 };
 
-},{}],65:[function(require,module,exports){
+},{}],63:[function(require,module,exports){
 'use strict';
 
 exports.decode = exports.parse = require('./decode');
 exports.encode = exports.stringify = require('./encode');
 
-},{"./decode":63,"./encode":64}],66:[function(require,module,exports){
+},{"./decode":61,"./encode":62}],64:[function(require,module,exports){
 /**
  * An implementation of the RDF Dataset Normalization specification.
  *
@@ -16747,7 +16280,7 @@ exports.encode = exports.stringify = require('./encode');
  */
 module.exports = require('./lib');
 
-},{"./lib":75}],67:[function(require,module,exports){
+},{"./lib":73}],65:[function(require,module,exports){
 /*
  * Copyright (c) 2016-2021 Digital Bazaar, Inc. All rights reserved.
  */
@@ -16829,7 +16362,7 @@ module.exports = class IdentifierIssuer {
   }
 };
 
-},{}],68:[function(require,module,exports){
+},{}],66:[function(require,module,exports){
 /*
  * Copyright (c) 2016-2021 Digital Bazaar, Inc. All rights reserved.
  */
@@ -16880,7 +16413,7 @@ module.exports = class MessageDigest {
   }
 };
 
-},{"setimmediate":77}],69:[function(require,module,exports){
+},{"setimmediate":75}],67:[function(require,module,exports){
 /*
  * Copyright (c) 2016-2021 Digital Bazaar, Inc. All rights reserved.
  */
@@ -17275,7 +16808,7 @@ function _unescape(s) {
   });
 }
 
-},{}],70:[function(require,module,exports){
+},{}],68:[function(require,module,exports){
 /*
  * Copyright (c) 2016-2021 Digital Bazaar, Inc. All rights reserved.
  */
@@ -17362,7 +16895,7 @@ module.exports = class Permuter {
   }
 };
 
-},{}],71:[function(require,module,exports){
+},{}],69:[function(require,module,exports){
 (function (setImmediate){(function (){
 /*
  * Copyright (c) 2016-2021 Digital Bazaar, Inc. All rights reserved.
@@ -17876,7 +17409,7 @@ function _stringHashCompare(a, b) {
 }
 
 }).call(this)}).call(this,require("timers").setImmediate)
-},{"./IdentifierIssuer":67,"./MessageDigest":68,"./NQuads":69,"./Permuter":70,"timers":114}],72:[function(require,module,exports){
+},{"./IdentifierIssuer":65,"./MessageDigest":66,"./NQuads":67,"./Permuter":68,"timers":111}],70:[function(require,module,exports){
 /*
  * Copyright (c) 2016-2021 Digital Bazaar, Inc. All rights reserved.
  */
@@ -18366,7 +17899,7 @@ function _stringHashCompare(a, b) {
   return a.hash < b.hash ? -1 : a.hash > b.hash ? 1 : 0;
 }
 
-},{"./IdentifierIssuer":67,"./MessageDigest":68,"./NQuads":69,"./Permuter":70}],73:[function(require,module,exports){
+},{"./IdentifierIssuer":65,"./MessageDigest":66,"./NQuads":67,"./Permuter":68}],71:[function(require,module,exports){
 /*
  * Copyright (c) 2016-2021 Digital Bazaar, Inc. All rights reserved.
  */
@@ -18458,7 +17991,7 @@ module.exports = class URDNA2012 extends URDNA2015 {
   }
 };
 
-},{"./URDNA2015":71}],74:[function(require,module,exports){
+},{"./URDNA2015":69}],72:[function(require,module,exports){
 /*
  * Copyright (c) 2016-2021 Digital Bazaar, Inc. All rights reserved.
  */
@@ -18544,7 +18077,7 @@ module.exports = class URDNA2012Sync extends URDNA2015Sync {
   }
 };
 
-},{"./URDNA2015Sync":72}],75:[function(require,module,exports){
+},{"./URDNA2015Sync":70}],73:[function(require,module,exports){
 /**
  * An implementation of the RDF Dataset Normalization specification.
  * This library works in the browser and node.js.
@@ -18691,7 +18224,7 @@ api._canonizeSync = function(dataset, options) {
     'Invalid RDF Dataset Canonicalization algorithm: ' + options.algorithm);
 };
 
-},{"./IdentifierIssuer":67,"./NQuads":69,"./URDNA2015":71,"./URDNA2015Sync":72,"./URGNA2012":73,"./URGNA2012Sync":74,"rdf-canonize-native":4}],76:[function(require,module,exports){
+},{"./IdentifierIssuer":65,"./NQuads":67,"./URDNA2015":69,"./URDNA2015Sync":70,"./URGNA2012":71,"./URGNA2012Sync":72,"rdf-canonize-native":3}],74:[function(require,module,exports){
 /*! safe-buffer. MIT License. Feross Aboukhadijeh <https://feross.org/opensource> */
 /* eslint-disable node/no-deprecated-api */
 var buffer = require('buffer')
@@ -18758,7 +18291,7 @@ SafeBuffer.allocUnsafeSlow = function (size) {
   return buffer.SlowBuffer(size)
 }
 
-},{"buffer":9}],77:[function(require,module,exports){
+},{"buffer":5}],75:[function(require,module,exports){
 (function (process,global){(function (){
 (function (global, undefined) {
     "use strict";
@@ -18948,7 +18481,7 @@ SafeBuffer.allocUnsafeSlow = function (size) {
 }(typeof self === "undefined" ? typeof global === "undefined" ? this : global : self));
 
 }).call(this)}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"_process":62}],78:[function(require,module,exports){
+},{"_process":59}],76:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -19079,7 +18612,7 @@ Stream.prototype.pipe = function(dest, options) {
   return dest;
 };
 
-},{"events":15,"inherits":26,"readable-stream/lib/_stream_duplex.js":80,"readable-stream/lib/_stream_passthrough.js":81,"readable-stream/lib/_stream_readable.js":82,"readable-stream/lib/_stream_transform.js":83,"readable-stream/lib/_stream_writable.js":84,"readable-stream/lib/internal/streams/end-of-stream.js":88,"readable-stream/lib/internal/streams/pipeline.js":90}],79:[function(require,module,exports){
+},{"events":11,"inherits":22,"readable-stream/lib/_stream_duplex.js":78,"readable-stream/lib/_stream_passthrough.js":79,"readable-stream/lib/_stream_readable.js":80,"readable-stream/lib/_stream_transform.js":81,"readable-stream/lib/_stream_writable.js":82,"readable-stream/lib/internal/streams/end-of-stream.js":86,"readable-stream/lib/internal/streams/pipeline.js":88}],77:[function(require,module,exports){
 'use strict';
 
 function _inheritsLoose(subClass, superClass) { subClass.prototype = Object.create(superClass.prototype); subClass.prototype.constructor = subClass; subClass.__proto__ = superClass; }
@@ -19208,7 +18741,7 @@ createErrorType('ERR_UNKNOWN_ENCODING', function (arg) {
 createErrorType('ERR_STREAM_UNSHIFT_AFTER_END_EVENT', 'stream.unshift() after end event');
 module.exports.codes = codes;
 
-},{}],80:[function(require,module,exports){
+},{}],78:[function(require,module,exports){
 (function (process){(function (){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -19350,7 +18883,7 @@ Object.defineProperty(Duplex.prototype, 'destroyed', {
   }
 });
 }).call(this)}).call(this,require('_process'))
-},{"./_stream_readable":82,"./_stream_writable":84,"_process":62,"inherits":26}],81:[function(require,module,exports){
+},{"./_stream_readable":80,"./_stream_writable":82,"_process":59,"inherits":22}],79:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -19390,7 +18923,7 @@ function PassThrough(options) {
 PassThrough.prototype._transform = function (chunk, encoding, cb) {
   cb(null, chunk);
 };
-},{"./_stream_transform":83,"inherits":26}],82:[function(require,module,exports){
+},{"./_stream_transform":81,"inherits":22}],80:[function(require,module,exports){
 (function (process,global){(function (){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -20517,7 +20050,7 @@ function indexOf(xs, x) {
   return -1;
 }
 }).call(this)}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../errors":79,"./_stream_duplex":80,"./internal/streams/async_iterator":85,"./internal/streams/buffer_list":86,"./internal/streams/destroy":87,"./internal/streams/from":89,"./internal/streams/state":91,"./internal/streams/stream":92,"_process":62,"buffer":9,"events":15,"inherits":26,"string_decoder/":93,"util":4}],83:[function(require,module,exports){
+},{"../errors":77,"./_stream_duplex":78,"./internal/streams/async_iterator":83,"./internal/streams/buffer_list":84,"./internal/streams/destroy":85,"./internal/streams/from":87,"./internal/streams/state":89,"./internal/streams/stream":90,"_process":59,"buffer":5,"events":11,"inherits":22,"string_decoder/":110,"util":3}],81:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -20719,7 +20252,7 @@ function done(stream, er, data) {
   if (stream._transformState.transforming) throw new ERR_TRANSFORM_ALREADY_TRANSFORMING();
   return stream.push(null);
 }
-},{"../errors":79,"./_stream_duplex":80,"inherits":26}],84:[function(require,module,exports){
+},{"../errors":77,"./_stream_duplex":78,"inherits":22}],82:[function(require,module,exports){
 (function (process,global){(function (){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -21419,7 +20952,7 @@ Writable.prototype._destroy = function (err, cb) {
   cb(err);
 };
 }).call(this)}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../errors":79,"./_stream_duplex":80,"./internal/streams/destroy":87,"./internal/streams/state":91,"./internal/streams/stream":92,"_process":62,"buffer":9,"inherits":26,"util-deprecate":117}],85:[function(require,module,exports){
+},{"../errors":77,"./_stream_duplex":78,"./internal/streams/destroy":85,"./internal/streams/state":89,"./internal/streams/stream":90,"_process":59,"buffer":5,"inherits":22,"util-deprecate":114}],83:[function(require,module,exports){
 (function (process){(function (){
 'use strict';
 
@@ -21629,7 +21162,7 @@ var createReadableStreamAsyncIterator = function createReadableStreamAsyncIterat
 
 module.exports = createReadableStreamAsyncIterator;
 }).call(this)}).call(this,require('_process'))
-},{"./end-of-stream":88,"_process":62}],86:[function(require,module,exports){
+},{"./end-of-stream":86,"_process":59}],84:[function(require,module,exports){
 'use strict';
 
 function ownKeys(object, enumerableOnly) { var keys = Object.keys(object); if (Object.getOwnPropertySymbols) { var symbols = Object.getOwnPropertySymbols(object); if (enumerableOnly) symbols = symbols.filter(function (sym) { return Object.getOwnPropertyDescriptor(object, sym).enumerable; }); keys.push.apply(keys, symbols); } return keys; }
@@ -21840,7 +21373,7 @@ function () {
 
   return BufferList;
 }();
-},{"buffer":9,"util":4}],87:[function(require,module,exports){
+},{"buffer":5,"util":3}],85:[function(require,module,exports){
 (function (process){(function (){
 'use strict'; // undocumented cb() API, needed for core, not for public API
 
@@ -21948,7 +21481,7 @@ module.exports = {
   errorOrDestroy: errorOrDestroy
 };
 }).call(this)}).call(this,require('_process'))
-},{"_process":62}],88:[function(require,module,exports){
+},{"_process":59}],86:[function(require,module,exports){
 // Ported from https://github.com/mafintosh/end-of-stream with
 // permission from the author, Mathias Buus (@mafintosh).
 'use strict';
@@ -22053,12 +21586,12 @@ function eos(stream, opts, callback) {
 }
 
 module.exports = eos;
-},{"../../../errors":79}],89:[function(require,module,exports){
+},{"../../../errors":77}],87:[function(require,module,exports){
 module.exports = function () {
   throw new Error('Readable.from is not available in the browser')
 };
 
-},{}],90:[function(require,module,exports){
+},{}],88:[function(require,module,exports){
 // Ported from https://github.com/mafintosh/pump with
 // permission from the author, Mathias Buus (@mafintosh).
 'use strict';
@@ -22156,7 +21689,7 @@ function pipeline() {
 }
 
 module.exports = pipeline;
-},{"../../../errors":79,"./end-of-stream":88}],91:[function(require,module,exports){
+},{"../../../errors":77,"./end-of-stream":86}],89:[function(require,module,exports){
 'use strict';
 
 var ERR_INVALID_OPT_VALUE = require('../../../errors').codes.ERR_INVALID_OPT_VALUE;
@@ -22184,307 +21717,10 @@ function getHighWaterMark(state, options, duplexKey, isDuplex) {
 module.exports = {
   getHighWaterMark: getHighWaterMark
 };
-},{"../../../errors":79}],92:[function(require,module,exports){
+},{"../../../errors":77}],90:[function(require,module,exports){
 module.exports = require('events').EventEmitter;
 
-},{"events":15}],93:[function(require,module,exports){
-// Copyright Joyent, Inc. and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-'use strict';
-
-/*<replacement>*/
-
-var Buffer = require('safe-buffer').Buffer;
-/*</replacement>*/
-
-var isEncoding = Buffer.isEncoding || function (encoding) {
-  encoding = '' + encoding;
-  switch (encoding && encoding.toLowerCase()) {
-    case 'hex':case 'utf8':case 'utf-8':case 'ascii':case 'binary':case 'base64':case 'ucs2':case 'ucs-2':case 'utf16le':case 'utf-16le':case 'raw':
-      return true;
-    default:
-      return false;
-  }
-};
-
-function _normalizeEncoding(enc) {
-  if (!enc) return 'utf8';
-  var retried;
-  while (true) {
-    switch (enc) {
-      case 'utf8':
-      case 'utf-8':
-        return 'utf8';
-      case 'ucs2':
-      case 'ucs-2':
-      case 'utf16le':
-      case 'utf-16le':
-        return 'utf16le';
-      case 'latin1':
-      case 'binary':
-        return 'latin1';
-      case 'base64':
-      case 'ascii':
-      case 'hex':
-        return enc;
-      default:
-        if (retried) return; // undefined
-        enc = ('' + enc).toLowerCase();
-        retried = true;
-    }
-  }
-};
-
-// Do not cache `Buffer.isEncoding` when checking encoding names as some
-// modules monkey-patch it to support additional encodings
-function normalizeEncoding(enc) {
-  var nenc = _normalizeEncoding(enc);
-  if (typeof nenc !== 'string' && (Buffer.isEncoding === isEncoding || !isEncoding(enc))) throw new Error('Unknown encoding: ' + enc);
-  return nenc || enc;
-}
-
-// StringDecoder provides an interface for efficiently splitting a series of
-// buffers into a series of JS strings without breaking apart multi-byte
-// characters.
-exports.StringDecoder = StringDecoder;
-function StringDecoder(encoding) {
-  this.encoding = normalizeEncoding(encoding);
-  var nb;
-  switch (this.encoding) {
-    case 'utf16le':
-      this.text = utf16Text;
-      this.end = utf16End;
-      nb = 4;
-      break;
-    case 'utf8':
-      this.fillLast = utf8FillLast;
-      nb = 4;
-      break;
-    case 'base64':
-      this.text = base64Text;
-      this.end = base64End;
-      nb = 3;
-      break;
-    default:
-      this.write = simpleWrite;
-      this.end = simpleEnd;
-      return;
-  }
-  this.lastNeed = 0;
-  this.lastTotal = 0;
-  this.lastChar = Buffer.allocUnsafe(nb);
-}
-
-StringDecoder.prototype.write = function (buf) {
-  if (buf.length === 0) return '';
-  var r;
-  var i;
-  if (this.lastNeed) {
-    r = this.fillLast(buf);
-    if (r === undefined) return '';
-    i = this.lastNeed;
-    this.lastNeed = 0;
-  } else {
-    i = 0;
-  }
-  if (i < buf.length) return r ? r + this.text(buf, i) : this.text(buf, i);
-  return r || '';
-};
-
-StringDecoder.prototype.end = utf8End;
-
-// Returns only complete characters in a Buffer
-StringDecoder.prototype.text = utf8Text;
-
-// Attempts to complete a partial non-UTF-8 character using bytes from a Buffer
-StringDecoder.prototype.fillLast = function (buf) {
-  if (this.lastNeed <= buf.length) {
-    buf.copy(this.lastChar, this.lastTotal - this.lastNeed, 0, this.lastNeed);
-    return this.lastChar.toString(this.encoding, 0, this.lastTotal);
-  }
-  buf.copy(this.lastChar, this.lastTotal - this.lastNeed, 0, buf.length);
-  this.lastNeed -= buf.length;
-};
-
-// Checks the type of a UTF-8 byte, whether it's ASCII, a leading byte, or a
-// continuation byte. If an invalid byte is detected, -2 is returned.
-function utf8CheckByte(byte) {
-  if (byte <= 0x7F) return 0;else if (byte >> 5 === 0x06) return 2;else if (byte >> 4 === 0x0E) return 3;else if (byte >> 3 === 0x1E) return 4;
-  return byte >> 6 === 0x02 ? -1 : -2;
-}
-
-// Checks at most 3 bytes at the end of a Buffer in order to detect an
-// incomplete multi-byte UTF-8 character. The total number of bytes (2, 3, or 4)
-// needed to complete the UTF-8 character (if applicable) are returned.
-function utf8CheckIncomplete(self, buf, i) {
-  var j = buf.length - 1;
-  if (j < i) return 0;
-  var nb = utf8CheckByte(buf[j]);
-  if (nb >= 0) {
-    if (nb > 0) self.lastNeed = nb - 1;
-    return nb;
-  }
-  if (--j < i || nb === -2) return 0;
-  nb = utf8CheckByte(buf[j]);
-  if (nb >= 0) {
-    if (nb > 0) self.lastNeed = nb - 2;
-    return nb;
-  }
-  if (--j < i || nb === -2) return 0;
-  nb = utf8CheckByte(buf[j]);
-  if (nb >= 0) {
-    if (nb > 0) {
-      if (nb === 2) nb = 0;else self.lastNeed = nb - 3;
-    }
-    return nb;
-  }
-  return 0;
-}
-
-// Validates as many continuation bytes for a multi-byte UTF-8 character as
-// needed or are available. If we see a non-continuation byte where we expect
-// one, we "replace" the validated continuation bytes we've seen so far with
-// a single UTF-8 replacement character ('\ufffd'), to match v8's UTF-8 decoding
-// behavior. The continuation byte check is included three times in the case
-// where all of the continuation bytes for a character exist in the same buffer.
-// It is also done this way as a slight performance increase instead of using a
-// loop.
-function utf8CheckExtraBytes(self, buf, p) {
-  if ((buf[0] & 0xC0) !== 0x80) {
-    self.lastNeed = 0;
-    return '\ufffd';
-  }
-  if (self.lastNeed > 1 && buf.length > 1) {
-    if ((buf[1] & 0xC0) !== 0x80) {
-      self.lastNeed = 1;
-      return '\ufffd';
-    }
-    if (self.lastNeed > 2 && buf.length > 2) {
-      if ((buf[2] & 0xC0) !== 0x80) {
-        self.lastNeed = 2;
-        return '\ufffd';
-      }
-    }
-  }
-}
-
-// Attempts to complete a multi-byte UTF-8 character using bytes from a Buffer.
-function utf8FillLast(buf) {
-  var p = this.lastTotal - this.lastNeed;
-  var r = utf8CheckExtraBytes(this, buf, p);
-  if (r !== undefined) return r;
-  if (this.lastNeed <= buf.length) {
-    buf.copy(this.lastChar, p, 0, this.lastNeed);
-    return this.lastChar.toString(this.encoding, 0, this.lastTotal);
-  }
-  buf.copy(this.lastChar, p, 0, buf.length);
-  this.lastNeed -= buf.length;
-}
-
-// Returns all complete UTF-8 characters in a Buffer. If the Buffer ended on a
-// partial character, the character's bytes are buffered until the required
-// number of bytes are available.
-function utf8Text(buf, i) {
-  var total = utf8CheckIncomplete(this, buf, i);
-  if (!this.lastNeed) return buf.toString('utf8', i);
-  this.lastTotal = total;
-  var end = buf.length - (total - this.lastNeed);
-  buf.copy(this.lastChar, 0, end);
-  return buf.toString('utf8', i, end);
-}
-
-// For UTF-8, a replacement character is added when ending on a partial
-// character.
-function utf8End(buf) {
-  var r = buf && buf.length ? this.write(buf) : '';
-  if (this.lastNeed) return r + '\ufffd';
-  return r;
-}
-
-// UTF-16LE typically needs two bytes per character, but even if we have an even
-// number of bytes available, we need to check if we end on a leading/high
-// surrogate. In that case, we need to wait for the next two bytes in order to
-// decode the last character properly.
-function utf16Text(buf, i) {
-  if ((buf.length - i) % 2 === 0) {
-    var r = buf.toString('utf16le', i);
-    if (r) {
-      var c = r.charCodeAt(r.length - 1);
-      if (c >= 0xD800 && c <= 0xDBFF) {
-        this.lastNeed = 2;
-        this.lastTotal = 4;
-        this.lastChar[0] = buf[buf.length - 2];
-        this.lastChar[1] = buf[buf.length - 1];
-        return r.slice(0, -1);
-      }
-    }
-    return r;
-  }
-  this.lastNeed = 1;
-  this.lastTotal = 2;
-  this.lastChar[0] = buf[buf.length - 1];
-  return buf.toString('utf16le', i, buf.length - 1);
-}
-
-// For UTF-16LE we do not explicitly append special replacement characters if we
-// end on a partial character, we simply let v8 handle that.
-function utf16End(buf) {
-  var r = buf && buf.length ? this.write(buf) : '';
-  if (this.lastNeed) {
-    var end = this.lastTotal - this.lastNeed;
-    return r + this.lastChar.toString('utf16le', 0, end);
-  }
-  return r;
-}
-
-function base64Text(buf, i) {
-  var n = (buf.length - i) % 3;
-  if (n === 0) return buf.toString('base64', i);
-  this.lastNeed = 3 - n;
-  this.lastTotal = 3;
-  if (n === 1) {
-    this.lastChar[0] = buf[buf.length - 1];
-  } else {
-    this.lastChar[0] = buf[buf.length - 2];
-    this.lastChar[1] = buf[buf.length - 1];
-  }
-  return buf.toString('base64', i, buf.length - n);
-}
-
-function base64End(buf) {
-  var r = buf && buf.length ? this.write(buf) : '';
-  if (this.lastNeed) return r + this.lastChar.toString('base64', 0, 3 - this.lastNeed);
-  return r;
-}
-
-// Pass bytes on through for single-byte encodings (e.g. ascii, latin1, hex)
-function simpleWrite(buf) {
-  return buf.toString(this.encoding);
-}
-
-function simpleEnd(buf) {
-  return buf && buf.length ? this.write(buf) : '';
-}
-},{"safe-buffer":76}],94:[function(require,module,exports){
+},{"events":11}],91:[function(require,module,exports){
 (function (global){(function (){
 var ClientRequest = require('./lib/request')
 var response = require('./lib/response')
@@ -22572,7 +21808,7 @@ http.METHODS = [
 	'UNSUBSCRIBE'
 ]
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./lib/request":96,"./lib/response":97,"builtin-status-codes":10,"url":115,"xtend":119}],95:[function(require,module,exports){
+},{"./lib/request":93,"./lib/response":94,"builtin-status-codes":6,"url":112,"xtend":119}],92:[function(require,module,exports){
 (function (global){(function (){
 exports.fetch = isFunction(global.fetch) && isFunction(global.ReadableStream)
 
@@ -22635,7 +21871,7 @@ function isFunction (value) {
 xhr = null // Help gc
 
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],96:[function(require,module,exports){
+},{}],93:[function(require,module,exports){
 (function (process,global,Buffer){(function (){
 var capability = require('./capability')
 var inherits = require('inherits')
@@ -22991,7 +22227,7 @@ var unsafeHeaders = [
 ]
 
 }).call(this)}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},require("buffer").Buffer)
-},{"./capability":95,"./response":97,"_process":62,"buffer":9,"inherits":26,"readable-stream":112}],97:[function(require,module,exports){
+},{"./capability":92,"./response":94,"_process":59,"buffer":5,"inherits":22,"readable-stream":109}],94:[function(require,module,exports){
 (function (process,global,Buffer){(function (){
 var capability = require('./capability')
 var inherits = require('inherits')
@@ -23206,35 +22442,35 @@ IncomingMessage.prototype._onXHRProgress = function (resetTimers) {
 }
 
 }).call(this)}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},require("buffer").Buffer)
-},{"./capability":95,"_process":62,"buffer":9,"inherits":26,"readable-stream":112}],98:[function(require,module,exports){
+},{"./capability":92,"_process":59,"buffer":5,"inherits":22,"readable-stream":109}],95:[function(require,module,exports){
+arguments[4][77][0].apply(exports,arguments)
+},{"dup":77}],96:[function(require,module,exports){
+arguments[4][78][0].apply(exports,arguments)
+},{"./_stream_readable":98,"./_stream_writable":100,"_process":59,"dup":78,"inherits":22}],97:[function(require,module,exports){
 arguments[4][79][0].apply(exports,arguments)
-},{"dup":79}],99:[function(require,module,exports){
+},{"./_stream_transform":99,"dup":79,"inherits":22}],98:[function(require,module,exports){
 arguments[4][80][0].apply(exports,arguments)
-},{"./_stream_readable":101,"./_stream_writable":103,"_process":62,"dup":80,"inherits":26}],100:[function(require,module,exports){
+},{"../errors":95,"./_stream_duplex":96,"./internal/streams/async_iterator":101,"./internal/streams/buffer_list":102,"./internal/streams/destroy":103,"./internal/streams/from":105,"./internal/streams/state":107,"./internal/streams/stream":108,"_process":59,"buffer":5,"dup":80,"events":11,"inherits":22,"string_decoder/":110,"util":3}],99:[function(require,module,exports){
 arguments[4][81][0].apply(exports,arguments)
-},{"./_stream_transform":102,"dup":81,"inherits":26}],101:[function(require,module,exports){
+},{"../errors":95,"./_stream_duplex":96,"dup":81,"inherits":22}],100:[function(require,module,exports){
 arguments[4][82][0].apply(exports,arguments)
-},{"../errors":98,"./_stream_duplex":99,"./internal/streams/async_iterator":104,"./internal/streams/buffer_list":105,"./internal/streams/destroy":106,"./internal/streams/from":108,"./internal/streams/state":110,"./internal/streams/stream":111,"_process":62,"buffer":9,"dup":82,"events":15,"inherits":26,"string_decoder/":113,"util":4}],102:[function(require,module,exports){
+},{"../errors":95,"./_stream_duplex":96,"./internal/streams/destroy":103,"./internal/streams/state":107,"./internal/streams/stream":108,"_process":59,"buffer":5,"dup":82,"inherits":22,"util-deprecate":114}],101:[function(require,module,exports){
 arguments[4][83][0].apply(exports,arguments)
-},{"../errors":98,"./_stream_duplex":99,"dup":83,"inherits":26}],103:[function(require,module,exports){
+},{"./end-of-stream":104,"_process":59,"dup":83}],102:[function(require,module,exports){
 arguments[4][84][0].apply(exports,arguments)
-},{"../errors":98,"./_stream_duplex":99,"./internal/streams/destroy":106,"./internal/streams/state":110,"./internal/streams/stream":111,"_process":62,"buffer":9,"dup":84,"inherits":26,"util-deprecate":117}],104:[function(require,module,exports){
+},{"buffer":5,"dup":84,"util":3}],103:[function(require,module,exports){
 arguments[4][85][0].apply(exports,arguments)
-},{"./end-of-stream":107,"_process":62,"dup":85}],105:[function(require,module,exports){
+},{"_process":59,"dup":85}],104:[function(require,module,exports){
 arguments[4][86][0].apply(exports,arguments)
-},{"buffer":9,"dup":86,"util":4}],106:[function(require,module,exports){
+},{"../../../errors":95,"dup":86}],105:[function(require,module,exports){
 arguments[4][87][0].apply(exports,arguments)
-},{"_process":62,"dup":87}],107:[function(require,module,exports){
+},{"dup":87}],106:[function(require,module,exports){
 arguments[4][88][0].apply(exports,arguments)
-},{"../../../errors":98,"dup":88}],108:[function(require,module,exports){
+},{"../../../errors":95,"./end-of-stream":104,"dup":88}],107:[function(require,module,exports){
 arguments[4][89][0].apply(exports,arguments)
-},{"dup":89}],109:[function(require,module,exports){
+},{"../../../errors":95,"dup":89}],108:[function(require,module,exports){
 arguments[4][90][0].apply(exports,arguments)
-},{"../../../errors":98,"./end-of-stream":107,"dup":90}],110:[function(require,module,exports){
-arguments[4][91][0].apply(exports,arguments)
-},{"../../../errors":98,"dup":91}],111:[function(require,module,exports){
-arguments[4][92][0].apply(exports,arguments)
-},{"dup":92,"events":15}],112:[function(require,module,exports){
+},{"dup":90,"events":11}],109:[function(require,module,exports){
 exports = module.exports = require('./lib/_stream_readable.js');
 exports.Stream = exports;
 exports.Readable = exports;
@@ -23245,9 +22481,304 @@ exports.PassThrough = require('./lib/_stream_passthrough.js');
 exports.finished = require('./lib/internal/streams/end-of-stream.js');
 exports.pipeline = require('./lib/internal/streams/pipeline.js');
 
-},{"./lib/_stream_duplex.js":99,"./lib/_stream_passthrough.js":100,"./lib/_stream_readable.js":101,"./lib/_stream_transform.js":102,"./lib/_stream_writable.js":103,"./lib/internal/streams/end-of-stream.js":107,"./lib/internal/streams/pipeline.js":109}],113:[function(require,module,exports){
-arguments[4][93][0].apply(exports,arguments)
-},{"dup":93,"safe-buffer":76}],114:[function(require,module,exports){
+},{"./lib/_stream_duplex.js":96,"./lib/_stream_passthrough.js":97,"./lib/_stream_readable.js":98,"./lib/_stream_transform.js":99,"./lib/_stream_writable.js":100,"./lib/internal/streams/end-of-stream.js":104,"./lib/internal/streams/pipeline.js":106}],110:[function(require,module,exports){
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+'use strict';
+
+/*<replacement>*/
+
+var Buffer = require('safe-buffer').Buffer;
+/*</replacement>*/
+
+var isEncoding = Buffer.isEncoding || function (encoding) {
+  encoding = '' + encoding;
+  switch (encoding && encoding.toLowerCase()) {
+    case 'hex':case 'utf8':case 'utf-8':case 'ascii':case 'binary':case 'base64':case 'ucs2':case 'ucs-2':case 'utf16le':case 'utf-16le':case 'raw':
+      return true;
+    default:
+      return false;
+  }
+};
+
+function _normalizeEncoding(enc) {
+  if (!enc) return 'utf8';
+  var retried;
+  while (true) {
+    switch (enc) {
+      case 'utf8':
+      case 'utf-8':
+        return 'utf8';
+      case 'ucs2':
+      case 'ucs-2':
+      case 'utf16le':
+      case 'utf-16le':
+        return 'utf16le';
+      case 'latin1':
+      case 'binary':
+        return 'latin1';
+      case 'base64':
+      case 'ascii':
+      case 'hex':
+        return enc;
+      default:
+        if (retried) return; // undefined
+        enc = ('' + enc).toLowerCase();
+        retried = true;
+    }
+  }
+};
+
+// Do not cache `Buffer.isEncoding` when checking encoding names as some
+// modules monkey-patch it to support additional encodings
+function normalizeEncoding(enc) {
+  var nenc = _normalizeEncoding(enc);
+  if (typeof nenc !== 'string' && (Buffer.isEncoding === isEncoding || !isEncoding(enc))) throw new Error('Unknown encoding: ' + enc);
+  return nenc || enc;
+}
+
+// StringDecoder provides an interface for efficiently splitting a series of
+// buffers into a series of JS strings without breaking apart multi-byte
+// characters.
+exports.StringDecoder = StringDecoder;
+function StringDecoder(encoding) {
+  this.encoding = normalizeEncoding(encoding);
+  var nb;
+  switch (this.encoding) {
+    case 'utf16le':
+      this.text = utf16Text;
+      this.end = utf16End;
+      nb = 4;
+      break;
+    case 'utf8':
+      this.fillLast = utf8FillLast;
+      nb = 4;
+      break;
+    case 'base64':
+      this.text = base64Text;
+      this.end = base64End;
+      nb = 3;
+      break;
+    default:
+      this.write = simpleWrite;
+      this.end = simpleEnd;
+      return;
+  }
+  this.lastNeed = 0;
+  this.lastTotal = 0;
+  this.lastChar = Buffer.allocUnsafe(nb);
+}
+
+StringDecoder.prototype.write = function (buf) {
+  if (buf.length === 0) return '';
+  var r;
+  var i;
+  if (this.lastNeed) {
+    r = this.fillLast(buf);
+    if (r === undefined) return '';
+    i = this.lastNeed;
+    this.lastNeed = 0;
+  } else {
+    i = 0;
+  }
+  if (i < buf.length) return r ? r + this.text(buf, i) : this.text(buf, i);
+  return r || '';
+};
+
+StringDecoder.prototype.end = utf8End;
+
+// Returns only complete characters in a Buffer
+StringDecoder.prototype.text = utf8Text;
+
+// Attempts to complete a partial non-UTF-8 character using bytes from a Buffer
+StringDecoder.prototype.fillLast = function (buf) {
+  if (this.lastNeed <= buf.length) {
+    buf.copy(this.lastChar, this.lastTotal - this.lastNeed, 0, this.lastNeed);
+    return this.lastChar.toString(this.encoding, 0, this.lastTotal);
+  }
+  buf.copy(this.lastChar, this.lastTotal - this.lastNeed, 0, buf.length);
+  this.lastNeed -= buf.length;
+};
+
+// Checks the type of a UTF-8 byte, whether it's ASCII, a leading byte, or a
+// continuation byte. If an invalid byte is detected, -2 is returned.
+function utf8CheckByte(byte) {
+  if (byte <= 0x7F) return 0;else if (byte >> 5 === 0x06) return 2;else if (byte >> 4 === 0x0E) return 3;else if (byte >> 3 === 0x1E) return 4;
+  return byte >> 6 === 0x02 ? -1 : -2;
+}
+
+// Checks at most 3 bytes at the end of a Buffer in order to detect an
+// incomplete multi-byte UTF-8 character. The total number of bytes (2, 3, or 4)
+// needed to complete the UTF-8 character (if applicable) are returned.
+function utf8CheckIncomplete(self, buf, i) {
+  var j = buf.length - 1;
+  if (j < i) return 0;
+  var nb = utf8CheckByte(buf[j]);
+  if (nb >= 0) {
+    if (nb > 0) self.lastNeed = nb - 1;
+    return nb;
+  }
+  if (--j < i || nb === -2) return 0;
+  nb = utf8CheckByte(buf[j]);
+  if (nb >= 0) {
+    if (nb > 0) self.lastNeed = nb - 2;
+    return nb;
+  }
+  if (--j < i || nb === -2) return 0;
+  nb = utf8CheckByte(buf[j]);
+  if (nb >= 0) {
+    if (nb > 0) {
+      if (nb === 2) nb = 0;else self.lastNeed = nb - 3;
+    }
+    return nb;
+  }
+  return 0;
+}
+
+// Validates as many continuation bytes for a multi-byte UTF-8 character as
+// needed or are available. If we see a non-continuation byte where we expect
+// one, we "replace" the validated continuation bytes we've seen so far with
+// a single UTF-8 replacement character ('\ufffd'), to match v8's UTF-8 decoding
+// behavior. The continuation byte check is included three times in the case
+// where all of the continuation bytes for a character exist in the same buffer.
+// It is also done this way as a slight performance increase instead of using a
+// loop.
+function utf8CheckExtraBytes(self, buf, p) {
+  if ((buf[0] & 0xC0) !== 0x80) {
+    self.lastNeed = 0;
+    return '\ufffd';
+  }
+  if (self.lastNeed > 1 && buf.length > 1) {
+    if ((buf[1] & 0xC0) !== 0x80) {
+      self.lastNeed = 1;
+      return '\ufffd';
+    }
+    if (self.lastNeed > 2 && buf.length > 2) {
+      if ((buf[2] & 0xC0) !== 0x80) {
+        self.lastNeed = 2;
+        return '\ufffd';
+      }
+    }
+  }
+}
+
+// Attempts to complete a multi-byte UTF-8 character using bytes from a Buffer.
+function utf8FillLast(buf) {
+  var p = this.lastTotal - this.lastNeed;
+  var r = utf8CheckExtraBytes(this, buf, p);
+  if (r !== undefined) return r;
+  if (this.lastNeed <= buf.length) {
+    buf.copy(this.lastChar, p, 0, this.lastNeed);
+    return this.lastChar.toString(this.encoding, 0, this.lastTotal);
+  }
+  buf.copy(this.lastChar, p, 0, buf.length);
+  this.lastNeed -= buf.length;
+}
+
+// Returns all complete UTF-8 characters in a Buffer. If the Buffer ended on a
+// partial character, the character's bytes are buffered until the required
+// number of bytes are available.
+function utf8Text(buf, i) {
+  var total = utf8CheckIncomplete(this, buf, i);
+  if (!this.lastNeed) return buf.toString('utf8', i);
+  this.lastTotal = total;
+  var end = buf.length - (total - this.lastNeed);
+  buf.copy(this.lastChar, 0, end);
+  return buf.toString('utf8', i, end);
+}
+
+// For UTF-8, a replacement character is added when ending on a partial
+// character.
+function utf8End(buf) {
+  var r = buf && buf.length ? this.write(buf) : '';
+  if (this.lastNeed) return r + '\ufffd';
+  return r;
+}
+
+// UTF-16LE typically needs two bytes per character, but even if we have an even
+// number of bytes available, we need to check if we end on a leading/high
+// surrogate. In that case, we need to wait for the next two bytes in order to
+// decode the last character properly.
+function utf16Text(buf, i) {
+  if ((buf.length - i) % 2 === 0) {
+    var r = buf.toString('utf16le', i);
+    if (r) {
+      var c = r.charCodeAt(r.length - 1);
+      if (c >= 0xD800 && c <= 0xDBFF) {
+        this.lastNeed = 2;
+        this.lastTotal = 4;
+        this.lastChar[0] = buf[buf.length - 2];
+        this.lastChar[1] = buf[buf.length - 1];
+        return r.slice(0, -1);
+      }
+    }
+    return r;
+  }
+  this.lastNeed = 1;
+  this.lastTotal = 2;
+  this.lastChar[0] = buf[buf.length - 1];
+  return buf.toString('utf16le', i, buf.length - 1);
+}
+
+// For UTF-16LE we do not explicitly append special replacement characters if we
+// end on a partial character, we simply let v8 handle that.
+function utf16End(buf) {
+  var r = buf && buf.length ? this.write(buf) : '';
+  if (this.lastNeed) {
+    var end = this.lastTotal - this.lastNeed;
+    return r + this.lastChar.toString('utf16le', 0, end);
+  }
+  return r;
+}
+
+function base64Text(buf, i) {
+  var n = (buf.length - i) % 3;
+  if (n === 0) return buf.toString('base64', i);
+  this.lastNeed = 3 - n;
+  this.lastTotal = 3;
+  if (n === 1) {
+    this.lastChar[0] = buf[buf.length - 1];
+  } else {
+    this.lastChar[0] = buf[buf.length - 2];
+    this.lastChar[1] = buf[buf.length - 1];
+  }
+  return buf.toString('base64', i, buf.length - n);
+}
+
+function base64End(buf) {
+  var r = buf && buf.length ? this.write(buf) : '';
+  if (this.lastNeed) return r + this.lastChar.toString('base64', 0, 3 - this.lastNeed);
+  return r;
+}
+
+// Pass bytes on through for single-byte encodings (e.g. ascii, latin1, hex)
+function simpleWrite(buf) {
+  return buf.toString(this.encoding);
+}
+
+function simpleEnd(buf) {
+  return buf && buf.length ? this.write(buf) : '';
+}
+},{"safe-buffer":74}],111:[function(require,module,exports){
 (function (setImmediate,clearImmediate){(function (){
 var nextTick = require('process/browser.js').nextTick;
 var apply = Function.prototype.apply;
@@ -23326,7 +22857,7 @@ exports.clearImmediate = typeof clearImmediate === "function" ? clearImmediate :
   delete immediateIds[id];
 };
 }).call(this)}).call(this,require("timers").setImmediate,require("timers").clearImmediate)
-},{"process/browser.js":62,"timers":114}],115:[function(require,module,exports){
+},{"process/browser.js":59,"timers":111}],112:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -24060,7 +23591,7 @@ Url.prototype.parseHost = function() {
   if (host) this.hostname = host;
 };
 
-},{"./util":116,"punycode":5,"querystring":65}],116:[function(require,module,exports){
+},{"./util":113,"punycode":60,"querystring":63}],113:[function(require,module,exports){
 'use strict';
 
 module.exports = {
@@ -24078,7 +23609,7 @@ module.exports = {
   }
 };
 
-},{}],117:[function(require,module,exports){
+},{}],114:[function(require,module,exports){
 (function (global){(function (){
 
 /**
@@ -24149,7 +23680,1069 @@ function config (name) {
 }
 
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],118:[function(require,module,exports){
+},{}],115:[function(require,module,exports){
+module.exports = function isBuffer(arg) {
+  return arg && typeof arg === 'object'
+    && typeof arg.copy === 'function'
+    && typeof arg.fill === 'function'
+    && typeof arg.readUInt8 === 'function';
+}
+},{}],116:[function(require,module,exports){
+// Currently in sync with Node.js lib/internal/util/types.js
+// https://github.com/nodejs/node/commit/112cc7c27551254aa2b17098fb774867f05ed0d9
+
+'use strict';
+
+var isArgumentsObject = require('is-arguments');
+var isGeneratorFunction = require('is-generator-function');
+var whichTypedArray = require('which-typed-array');
+var isTypedArray = require('is-typed-array');
+
+function uncurryThis(f) {
+  return f.call.bind(f);
+}
+
+var BigIntSupported = typeof BigInt !== 'undefined';
+var SymbolSupported = typeof Symbol !== 'undefined';
+
+var ObjectToString = uncurryThis(Object.prototype.toString);
+
+var numberValue = uncurryThis(Number.prototype.valueOf);
+var stringValue = uncurryThis(String.prototype.valueOf);
+var booleanValue = uncurryThis(Boolean.prototype.valueOf);
+
+if (BigIntSupported) {
+  var bigIntValue = uncurryThis(BigInt.prototype.valueOf);
+}
+
+if (SymbolSupported) {
+  var symbolValue = uncurryThis(Symbol.prototype.valueOf);
+}
+
+function checkBoxedPrimitive(value, prototypeValueOf) {
+  if (typeof value !== 'object') {
+    return false;
+  }
+  try {
+    prototypeValueOf(value);
+    return true;
+  } catch(e) {
+    return false;
+  }
+}
+
+exports.isArgumentsObject = isArgumentsObject;
+exports.isGeneratorFunction = isGeneratorFunction;
+exports.isTypedArray = isTypedArray;
+
+// Taken from here and modified for better browser support
+// https://github.com/sindresorhus/p-is-promise/blob/cda35a513bda03f977ad5cde3a079d237e82d7ef/index.js
+function isPromise(input) {
+	return (
+		(
+			typeof Promise !== 'undefined' &&
+			input instanceof Promise
+		) ||
+		(
+			input !== null &&
+			typeof input === 'object' &&
+			typeof input.then === 'function' &&
+			typeof input.catch === 'function'
+		)
+	);
+}
+exports.isPromise = isPromise;
+
+function isArrayBufferView(value) {
+  if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView) {
+    return ArrayBuffer.isView(value);
+  }
+
+  return (
+    isTypedArray(value) ||
+    isDataView(value)
+  );
+}
+exports.isArrayBufferView = isArrayBufferView;
+
+
+function isUint8Array(value) {
+  return whichTypedArray(value) === 'Uint8Array';
+}
+exports.isUint8Array = isUint8Array;
+
+function isUint8ClampedArray(value) {
+  return whichTypedArray(value) === 'Uint8ClampedArray';
+}
+exports.isUint8ClampedArray = isUint8ClampedArray;
+
+function isUint16Array(value) {
+  return whichTypedArray(value) === 'Uint16Array';
+}
+exports.isUint16Array = isUint16Array;
+
+function isUint32Array(value) {
+  return whichTypedArray(value) === 'Uint32Array';
+}
+exports.isUint32Array = isUint32Array;
+
+function isInt8Array(value) {
+  return whichTypedArray(value) === 'Int8Array';
+}
+exports.isInt8Array = isInt8Array;
+
+function isInt16Array(value) {
+  return whichTypedArray(value) === 'Int16Array';
+}
+exports.isInt16Array = isInt16Array;
+
+function isInt32Array(value) {
+  return whichTypedArray(value) === 'Int32Array';
+}
+exports.isInt32Array = isInt32Array;
+
+function isFloat32Array(value) {
+  return whichTypedArray(value) === 'Float32Array';
+}
+exports.isFloat32Array = isFloat32Array;
+
+function isFloat64Array(value) {
+  return whichTypedArray(value) === 'Float64Array';
+}
+exports.isFloat64Array = isFloat64Array;
+
+function isBigInt64Array(value) {
+  return whichTypedArray(value) === 'BigInt64Array';
+}
+exports.isBigInt64Array = isBigInt64Array;
+
+function isBigUint64Array(value) {
+  return whichTypedArray(value) === 'BigUint64Array';
+}
+exports.isBigUint64Array = isBigUint64Array;
+
+function isMapToString(value) {
+  return ObjectToString(value) === '[object Map]';
+}
+isMapToString.working = (
+  typeof Map !== 'undefined' &&
+  isMapToString(new Map())
+);
+
+function isMap(value) {
+  if (typeof Map === 'undefined') {
+    return false;
+  }
+
+  return isMapToString.working
+    ? isMapToString(value)
+    : value instanceof Map;
+}
+exports.isMap = isMap;
+
+function isSetToString(value) {
+  return ObjectToString(value) === '[object Set]';
+}
+isSetToString.working = (
+  typeof Set !== 'undefined' &&
+  isSetToString(new Set())
+);
+function isSet(value) {
+  if (typeof Set === 'undefined') {
+    return false;
+  }
+
+  return isSetToString.working
+    ? isSetToString(value)
+    : value instanceof Set;
+}
+exports.isSet = isSet;
+
+function isWeakMapToString(value) {
+  return ObjectToString(value) === '[object WeakMap]';
+}
+isWeakMapToString.working = (
+  typeof WeakMap !== 'undefined' &&
+  isWeakMapToString(new WeakMap())
+);
+function isWeakMap(value) {
+  if (typeof WeakMap === 'undefined') {
+    return false;
+  }
+
+  return isWeakMapToString.working
+    ? isWeakMapToString(value)
+    : value instanceof WeakMap;
+}
+exports.isWeakMap = isWeakMap;
+
+function isWeakSetToString(value) {
+  return ObjectToString(value) === '[object WeakSet]';
+}
+isWeakSetToString.working = (
+  typeof WeakSet !== 'undefined' &&
+  isWeakSetToString(new WeakSet())
+);
+function isWeakSet(value) {
+  return isWeakSetToString(value);
+}
+exports.isWeakSet = isWeakSet;
+
+function isArrayBufferToString(value) {
+  return ObjectToString(value) === '[object ArrayBuffer]';
+}
+isArrayBufferToString.working = (
+  typeof ArrayBuffer !== 'undefined' &&
+  isArrayBufferToString(new ArrayBuffer())
+);
+function isArrayBuffer(value) {
+  if (typeof ArrayBuffer === 'undefined') {
+    return false;
+  }
+
+  return isArrayBufferToString.working
+    ? isArrayBufferToString(value)
+    : value instanceof ArrayBuffer;
+}
+exports.isArrayBuffer = isArrayBuffer;
+
+function isDataViewToString(value) {
+  return ObjectToString(value) === '[object DataView]';
+}
+isDataViewToString.working = (
+  typeof ArrayBuffer !== 'undefined' &&
+  typeof DataView !== 'undefined' &&
+  isDataViewToString(new DataView(new ArrayBuffer(1), 0, 1))
+);
+function isDataView(value) {
+  if (typeof DataView === 'undefined') {
+    return false;
+  }
+
+  return isDataViewToString.working
+    ? isDataViewToString(value)
+    : value instanceof DataView;
+}
+exports.isDataView = isDataView;
+
+// Store a copy of SharedArrayBuffer in case it's deleted elsewhere
+var SharedArrayBufferCopy = typeof SharedArrayBuffer !== 'undefined' ? SharedArrayBuffer : undefined;
+function isSharedArrayBufferToString(value) {
+  return ObjectToString(value) === '[object SharedArrayBuffer]';
+}
+function isSharedArrayBuffer(value) {
+  if (typeof SharedArrayBufferCopy === 'undefined') {
+    return false;
+  }
+
+  if (typeof isSharedArrayBufferToString.working === 'undefined') {
+    isSharedArrayBufferToString.working = isSharedArrayBufferToString(new SharedArrayBufferCopy());
+  }
+
+  return isSharedArrayBufferToString.working
+    ? isSharedArrayBufferToString(value)
+    : value instanceof SharedArrayBufferCopy;
+}
+exports.isSharedArrayBuffer = isSharedArrayBuffer;
+
+function isAsyncFunction(value) {
+  return ObjectToString(value) === '[object AsyncFunction]';
+}
+exports.isAsyncFunction = isAsyncFunction;
+
+function isMapIterator(value) {
+  return ObjectToString(value) === '[object Map Iterator]';
+}
+exports.isMapIterator = isMapIterator;
+
+function isSetIterator(value) {
+  return ObjectToString(value) === '[object Set Iterator]';
+}
+exports.isSetIterator = isSetIterator;
+
+function isGeneratorObject(value) {
+  return ObjectToString(value) === '[object Generator]';
+}
+exports.isGeneratorObject = isGeneratorObject;
+
+function isWebAssemblyCompiledModule(value) {
+  return ObjectToString(value) === '[object WebAssembly.Module]';
+}
+exports.isWebAssemblyCompiledModule = isWebAssemblyCompiledModule;
+
+function isNumberObject(value) {
+  return checkBoxedPrimitive(value, numberValue);
+}
+exports.isNumberObject = isNumberObject;
+
+function isStringObject(value) {
+  return checkBoxedPrimitive(value, stringValue);
+}
+exports.isStringObject = isStringObject;
+
+function isBooleanObject(value) {
+  return checkBoxedPrimitive(value, booleanValue);
+}
+exports.isBooleanObject = isBooleanObject;
+
+function isBigIntObject(value) {
+  return BigIntSupported && checkBoxedPrimitive(value, bigIntValue);
+}
+exports.isBigIntObject = isBigIntObject;
+
+function isSymbolObject(value) {
+  return SymbolSupported && checkBoxedPrimitive(value, symbolValue);
+}
+exports.isSymbolObject = isSymbolObject;
+
+function isBoxedPrimitive(value) {
+  return (
+    isNumberObject(value) ||
+    isStringObject(value) ||
+    isBooleanObject(value) ||
+    isBigIntObject(value) ||
+    isSymbolObject(value)
+  );
+}
+exports.isBoxedPrimitive = isBoxedPrimitive;
+
+function isAnyArrayBuffer(value) {
+  return typeof Uint8Array !== 'undefined' && (
+    isArrayBuffer(value) ||
+    isSharedArrayBuffer(value)
+  );
+}
+exports.isAnyArrayBuffer = isAnyArrayBuffer;
+
+['isProxy', 'isExternal', 'isModuleNamespaceObject'].forEach(function(method) {
+  Object.defineProperty(exports, method, {
+    enumerable: false,
+    value: function() {
+      throw new Error(method + ' is not supported in userland');
+    }
+  });
+});
+
+},{"is-arguments":23,"is-generator-function":25,"is-typed-array":26,"which-typed-array":118}],117:[function(require,module,exports){
+(function (process){(function (){
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+var getOwnPropertyDescriptors = Object.getOwnPropertyDescriptors ||
+  function getOwnPropertyDescriptors(obj) {
+    var keys = Object.keys(obj);
+    var descriptors = {};
+    for (var i = 0; i < keys.length; i++) {
+      descriptors[keys[i]] = Object.getOwnPropertyDescriptor(obj, keys[i]);
+    }
+    return descriptors;
+  };
+
+var formatRegExp = /%[sdj%]/g;
+exports.format = function(f) {
+  if (!isString(f)) {
+    var objects = [];
+    for (var i = 0; i < arguments.length; i++) {
+      objects.push(inspect(arguments[i]));
+    }
+    return objects.join(' ');
+  }
+
+  var i = 1;
+  var args = arguments;
+  var len = args.length;
+  var str = String(f).replace(formatRegExp, function(x) {
+    if (x === '%%') return '%';
+    if (i >= len) return x;
+    switch (x) {
+      case '%s': return String(args[i++]);
+      case '%d': return Number(args[i++]);
+      case '%j':
+        try {
+          return JSON.stringify(args[i++]);
+        } catch (_) {
+          return '[Circular]';
+        }
+      default:
+        return x;
+    }
+  });
+  for (var x = args[i]; i < len; x = args[++i]) {
+    if (isNull(x) || !isObject(x)) {
+      str += ' ' + x;
+    } else {
+      str += ' ' + inspect(x);
+    }
+  }
+  return str;
+};
+
+
+// Mark that a method should not be used.
+// Returns a modified function which warns once by default.
+// If --no-deprecation is set, then it is a no-op.
+exports.deprecate = function(fn, msg) {
+  if (typeof process !== 'undefined' && process.noDeprecation === true) {
+    return fn;
+  }
+
+  // Allow for deprecating things in the process of starting up.
+  if (typeof process === 'undefined') {
+    return function() {
+      return exports.deprecate(fn, msg).apply(this, arguments);
+    };
+  }
+
+  var warned = false;
+  function deprecated() {
+    if (!warned) {
+      if (process.throwDeprecation) {
+        throw new Error(msg);
+      } else if (process.traceDeprecation) {
+        console.trace(msg);
+      } else {
+        console.error(msg);
+      }
+      warned = true;
+    }
+    return fn.apply(this, arguments);
+  }
+
+  return deprecated;
+};
+
+
+var debugs = {};
+var debugEnvRegex = /^$/;
+
+if (process.env.NODE_DEBUG) {
+  var debugEnv = process.env.NODE_DEBUG;
+  debugEnv = debugEnv.replace(/[|\\{}()[\]^$+?.]/g, '\\$&')
+    .replace(/\*/g, '.*')
+    .replace(/,/g, '$|^')
+    .toUpperCase();
+  debugEnvRegex = new RegExp('^' + debugEnv + '$', 'i');
+}
+exports.debuglog = function(set) {
+  set = set.toUpperCase();
+  if (!debugs[set]) {
+    if (debugEnvRegex.test(set)) {
+      var pid = process.pid;
+      debugs[set] = function() {
+        var msg = exports.format.apply(exports, arguments);
+        console.error('%s %d: %s', set, pid, msg);
+      };
+    } else {
+      debugs[set] = function() {};
+    }
+  }
+  return debugs[set];
+};
+
+
+/**
+ * Echos the value of a value. Trys to print the value out
+ * in the best way possible given the different types.
+ *
+ * @param {Object} obj The object to print out.
+ * @param {Object} opts Optional options object that alters the output.
+ */
+/* legacy: obj, showHidden, depth, colors*/
+function inspect(obj, opts) {
+  // default options
+  var ctx = {
+    seen: [],
+    stylize: stylizeNoColor
+  };
+  // legacy...
+  if (arguments.length >= 3) ctx.depth = arguments[2];
+  if (arguments.length >= 4) ctx.colors = arguments[3];
+  if (isBoolean(opts)) {
+    // legacy...
+    ctx.showHidden = opts;
+  } else if (opts) {
+    // got an "options" object
+    exports._extend(ctx, opts);
+  }
+  // set default options
+  if (isUndefined(ctx.showHidden)) ctx.showHidden = false;
+  if (isUndefined(ctx.depth)) ctx.depth = 2;
+  if (isUndefined(ctx.colors)) ctx.colors = false;
+  if (isUndefined(ctx.customInspect)) ctx.customInspect = true;
+  if (ctx.colors) ctx.stylize = stylizeWithColor;
+  return formatValue(ctx, obj, ctx.depth);
+}
+exports.inspect = inspect;
+
+
+// http://en.wikipedia.org/wiki/ANSI_escape_code#graphics
+inspect.colors = {
+  'bold' : [1, 22],
+  'italic' : [3, 23],
+  'underline' : [4, 24],
+  'inverse' : [7, 27],
+  'white' : [37, 39],
+  'grey' : [90, 39],
+  'black' : [30, 39],
+  'blue' : [34, 39],
+  'cyan' : [36, 39],
+  'green' : [32, 39],
+  'magenta' : [35, 39],
+  'red' : [31, 39],
+  'yellow' : [33, 39]
+};
+
+// Don't use 'blue' not visible on cmd.exe
+inspect.styles = {
+  'special': 'cyan',
+  'number': 'yellow',
+  'boolean': 'yellow',
+  'undefined': 'grey',
+  'null': 'bold',
+  'string': 'green',
+  'date': 'magenta',
+  // "name": intentionally not styling
+  'regexp': 'red'
+};
+
+
+function stylizeWithColor(str, styleType) {
+  var style = inspect.styles[styleType];
+
+  if (style) {
+    return '\u001b[' + inspect.colors[style][0] + 'm' + str +
+           '\u001b[' + inspect.colors[style][1] + 'm';
+  } else {
+    return str;
+  }
+}
+
+
+function stylizeNoColor(str, styleType) {
+  return str;
+}
+
+
+function arrayToHash(array) {
+  var hash = {};
+
+  array.forEach(function(val, idx) {
+    hash[val] = true;
+  });
+
+  return hash;
+}
+
+
+function formatValue(ctx, value, recurseTimes) {
+  // Provide a hook for user-specified inspect functions.
+  // Check that value is an object with an inspect function on it
+  if (ctx.customInspect &&
+      value &&
+      isFunction(value.inspect) &&
+      // Filter out the util module, it's inspect function is special
+      value.inspect !== exports.inspect &&
+      // Also filter out any prototype objects using the circular check.
+      !(value.constructor && value.constructor.prototype === value)) {
+    var ret = value.inspect(recurseTimes, ctx);
+    if (!isString(ret)) {
+      ret = formatValue(ctx, ret, recurseTimes);
+    }
+    return ret;
+  }
+
+  // Primitive types cannot have properties
+  var primitive = formatPrimitive(ctx, value);
+  if (primitive) {
+    return primitive;
+  }
+
+  // Look up the keys of the object.
+  var keys = Object.keys(value);
+  var visibleKeys = arrayToHash(keys);
+
+  if (ctx.showHidden) {
+    keys = Object.getOwnPropertyNames(value);
+  }
+
+  // IE doesn't make error fields non-enumerable
+  // http://msdn.microsoft.com/en-us/library/ie/dww52sbt(v=vs.94).aspx
+  if (isError(value)
+      && (keys.indexOf('message') >= 0 || keys.indexOf('description') >= 0)) {
+    return formatError(value);
+  }
+
+  // Some type of object without properties can be shortcutted.
+  if (keys.length === 0) {
+    if (isFunction(value)) {
+      var name = value.name ? ': ' + value.name : '';
+      return ctx.stylize('[Function' + name + ']', 'special');
+    }
+    if (isRegExp(value)) {
+      return ctx.stylize(RegExp.prototype.toString.call(value), 'regexp');
+    }
+    if (isDate(value)) {
+      return ctx.stylize(Date.prototype.toString.call(value), 'date');
+    }
+    if (isError(value)) {
+      return formatError(value);
+    }
+  }
+
+  var base = '', array = false, braces = ['{', '}'];
+
+  // Make Array say that they are Array
+  if (isArray(value)) {
+    array = true;
+    braces = ['[', ']'];
+  }
+
+  // Make functions say that they are functions
+  if (isFunction(value)) {
+    var n = value.name ? ': ' + value.name : '';
+    base = ' [Function' + n + ']';
+  }
+
+  // Make RegExps say that they are RegExps
+  if (isRegExp(value)) {
+    base = ' ' + RegExp.prototype.toString.call(value);
+  }
+
+  // Make dates with properties first say the date
+  if (isDate(value)) {
+    base = ' ' + Date.prototype.toUTCString.call(value);
+  }
+
+  // Make error with message first say the error
+  if (isError(value)) {
+    base = ' ' + formatError(value);
+  }
+
+  if (keys.length === 0 && (!array || value.length == 0)) {
+    return braces[0] + base + braces[1];
+  }
+
+  if (recurseTimes < 0) {
+    if (isRegExp(value)) {
+      return ctx.stylize(RegExp.prototype.toString.call(value), 'regexp');
+    } else {
+      return ctx.stylize('[Object]', 'special');
+    }
+  }
+
+  ctx.seen.push(value);
+
+  var output;
+  if (array) {
+    output = formatArray(ctx, value, recurseTimes, visibleKeys, keys);
+  } else {
+    output = keys.map(function(key) {
+      return formatProperty(ctx, value, recurseTimes, visibleKeys, key, array);
+    });
+  }
+
+  ctx.seen.pop();
+
+  return reduceToSingleString(output, base, braces);
+}
+
+
+function formatPrimitive(ctx, value) {
+  if (isUndefined(value))
+    return ctx.stylize('undefined', 'undefined');
+  if (isString(value)) {
+    var simple = '\'' + JSON.stringify(value).replace(/^"|"$/g, '')
+                                             .replace(/'/g, "\\'")
+                                             .replace(/\\"/g, '"') + '\'';
+    return ctx.stylize(simple, 'string');
+  }
+  if (isNumber(value))
+    return ctx.stylize('' + value, 'number');
+  if (isBoolean(value))
+    return ctx.stylize('' + value, 'boolean');
+  // For some reason typeof null is "object", so special case here.
+  if (isNull(value))
+    return ctx.stylize('null', 'null');
+}
+
+
+function formatError(value) {
+  return '[' + Error.prototype.toString.call(value) + ']';
+}
+
+
+function formatArray(ctx, value, recurseTimes, visibleKeys, keys) {
+  var output = [];
+  for (var i = 0, l = value.length; i < l; ++i) {
+    if (hasOwnProperty(value, String(i))) {
+      output.push(formatProperty(ctx, value, recurseTimes, visibleKeys,
+          String(i), true));
+    } else {
+      output.push('');
+    }
+  }
+  keys.forEach(function(key) {
+    if (!key.match(/^\d+$/)) {
+      output.push(formatProperty(ctx, value, recurseTimes, visibleKeys,
+          key, true));
+    }
+  });
+  return output;
+}
+
+
+function formatProperty(ctx, value, recurseTimes, visibleKeys, key, array) {
+  var name, str, desc;
+  desc = Object.getOwnPropertyDescriptor(value, key) || { value: value[key] };
+  if (desc.get) {
+    if (desc.set) {
+      str = ctx.stylize('[Getter/Setter]', 'special');
+    } else {
+      str = ctx.stylize('[Getter]', 'special');
+    }
+  } else {
+    if (desc.set) {
+      str = ctx.stylize('[Setter]', 'special');
+    }
+  }
+  if (!hasOwnProperty(visibleKeys, key)) {
+    name = '[' + key + ']';
+  }
+  if (!str) {
+    if (ctx.seen.indexOf(desc.value) < 0) {
+      if (isNull(recurseTimes)) {
+        str = formatValue(ctx, desc.value, null);
+      } else {
+        str = formatValue(ctx, desc.value, recurseTimes - 1);
+      }
+      if (str.indexOf('\n') > -1) {
+        if (array) {
+          str = str.split('\n').map(function(line) {
+            return '  ' + line;
+          }).join('\n').substr(2);
+        } else {
+          str = '\n' + str.split('\n').map(function(line) {
+            return '   ' + line;
+          }).join('\n');
+        }
+      }
+    } else {
+      str = ctx.stylize('[Circular]', 'special');
+    }
+  }
+  if (isUndefined(name)) {
+    if (array && key.match(/^\d+$/)) {
+      return str;
+    }
+    name = JSON.stringify('' + key);
+    if (name.match(/^"([a-zA-Z_][a-zA-Z_0-9]*)"$/)) {
+      name = name.substr(1, name.length - 2);
+      name = ctx.stylize(name, 'name');
+    } else {
+      name = name.replace(/'/g, "\\'")
+                 .replace(/\\"/g, '"')
+                 .replace(/(^"|"$)/g, "'");
+      name = ctx.stylize(name, 'string');
+    }
+  }
+
+  return name + ': ' + str;
+}
+
+
+function reduceToSingleString(output, base, braces) {
+  var numLinesEst = 0;
+  var length = output.reduce(function(prev, cur) {
+    numLinesEst++;
+    if (cur.indexOf('\n') >= 0) numLinesEst++;
+    return prev + cur.replace(/\u001b\[\d\d?m/g, '').length + 1;
+  }, 0);
+
+  if (length > 60) {
+    return braces[0] +
+           (base === '' ? '' : base + '\n ') +
+           ' ' +
+           output.join(',\n  ') +
+           ' ' +
+           braces[1];
+  }
+
+  return braces[0] + base + ' ' + output.join(', ') + ' ' + braces[1];
+}
+
+
+// NOTE: These type checking functions intentionally don't use `instanceof`
+// because it is fragile and can be easily faked with `Object.create()`.
+exports.types = require('./support/types');
+
+function isArray(ar) {
+  return Array.isArray(ar);
+}
+exports.isArray = isArray;
+
+function isBoolean(arg) {
+  return typeof arg === 'boolean';
+}
+exports.isBoolean = isBoolean;
+
+function isNull(arg) {
+  return arg === null;
+}
+exports.isNull = isNull;
+
+function isNullOrUndefined(arg) {
+  return arg == null;
+}
+exports.isNullOrUndefined = isNullOrUndefined;
+
+function isNumber(arg) {
+  return typeof arg === 'number';
+}
+exports.isNumber = isNumber;
+
+function isString(arg) {
+  return typeof arg === 'string';
+}
+exports.isString = isString;
+
+function isSymbol(arg) {
+  return typeof arg === 'symbol';
+}
+exports.isSymbol = isSymbol;
+
+function isUndefined(arg) {
+  return arg === void 0;
+}
+exports.isUndefined = isUndefined;
+
+function isRegExp(re) {
+  return isObject(re) && objectToString(re) === '[object RegExp]';
+}
+exports.isRegExp = isRegExp;
+exports.types.isRegExp = isRegExp;
+
+function isObject(arg) {
+  return typeof arg === 'object' && arg !== null;
+}
+exports.isObject = isObject;
+
+function isDate(d) {
+  return isObject(d) && objectToString(d) === '[object Date]';
+}
+exports.isDate = isDate;
+exports.types.isDate = isDate;
+
+function isError(e) {
+  return isObject(e) &&
+      (objectToString(e) === '[object Error]' || e instanceof Error);
+}
+exports.isError = isError;
+exports.types.isNativeError = isError;
+
+function isFunction(arg) {
+  return typeof arg === 'function';
+}
+exports.isFunction = isFunction;
+
+function isPrimitive(arg) {
+  return arg === null ||
+         typeof arg === 'boolean' ||
+         typeof arg === 'number' ||
+         typeof arg === 'string' ||
+         typeof arg === 'symbol' ||  // ES6 symbol
+         typeof arg === 'undefined';
+}
+exports.isPrimitive = isPrimitive;
+
+exports.isBuffer = require('./support/isBuffer');
+
+function objectToString(o) {
+  return Object.prototype.toString.call(o);
+}
+
+
+function pad(n) {
+  return n < 10 ? '0' + n.toString(10) : n.toString(10);
+}
+
+
+var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep',
+              'Oct', 'Nov', 'Dec'];
+
+// 26 Feb 16:19:34
+function timestamp() {
+  var d = new Date();
+  var time = [pad(d.getHours()),
+              pad(d.getMinutes()),
+              pad(d.getSeconds())].join(':');
+  return [d.getDate(), months[d.getMonth()], time].join(' ');
+}
+
+
+// log is just a thin wrapper to console.log that prepends a timestamp
+exports.log = function() {
+  console.log('%s - %s', timestamp(), exports.format.apply(exports, arguments));
+};
+
+
+/**
+ * Inherit the prototype methods from one constructor into another.
+ *
+ * The Function.prototype.inherits from lang.js rewritten as a standalone
+ * function (not on Function.prototype). NOTE: If this file is to be loaded
+ * during bootstrapping this function needs to be rewritten using some native
+ * functions as prototype setup using normal JavaScript does not work as
+ * expected during bootstrapping (see mirror.js in r114903).
+ *
+ * @param {function} ctor Constructor function which needs to inherit the
+ *     prototype.
+ * @param {function} superCtor Constructor function to inherit prototype from.
+ */
+exports.inherits = require('inherits');
+
+exports._extend = function(origin, add) {
+  // Don't do anything if add isn't an object
+  if (!add || !isObject(add)) return origin;
+
+  var keys = Object.keys(add);
+  var i = keys.length;
+  while (i--) {
+    origin[keys[i]] = add[keys[i]];
+  }
+  return origin;
+};
+
+function hasOwnProperty(obj, prop) {
+  return Object.prototype.hasOwnProperty.call(obj, prop);
+}
+
+var kCustomPromisifiedSymbol = typeof Symbol !== 'undefined' ? Symbol('util.promisify.custom') : undefined;
+
+exports.promisify = function promisify(original) {
+  if (typeof original !== 'function')
+    throw new TypeError('The "original" argument must be of type Function');
+
+  if (kCustomPromisifiedSymbol && original[kCustomPromisifiedSymbol]) {
+    var fn = original[kCustomPromisifiedSymbol];
+    if (typeof fn !== 'function') {
+      throw new TypeError('The "util.promisify.custom" argument must be of type Function');
+    }
+    Object.defineProperty(fn, kCustomPromisifiedSymbol, {
+      value: fn, enumerable: false, writable: false, configurable: true
+    });
+    return fn;
+  }
+
+  function fn() {
+    var promiseResolve, promiseReject;
+    var promise = new Promise(function (resolve, reject) {
+      promiseResolve = resolve;
+      promiseReject = reject;
+    });
+
+    var args = [];
+    for (var i = 0; i < arguments.length; i++) {
+      args.push(arguments[i]);
+    }
+    args.push(function (err, value) {
+      if (err) {
+        promiseReject(err);
+      } else {
+        promiseResolve(value);
+      }
+    });
+
+    try {
+      original.apply(this, args);
+    } catch (err) {
+      promiseReject(err);
+    }
+
+    return promise;
+  }
+
+  Object.setPrototypeOf(fn, Object.getPrototypeOf(original));
+
+  if (kCustomPromisifiedSymbol) Object.defineProperty(fn, kCustomPromisifiedSymbol, {
+    value: fn, enumerable: false, writable: false, configurable: true
+  });
+  return Object.defineProperties(
+    fn,
+    getOwnPropertyDescriptors(original)
+  );
+}
+
+exports.promisify.custom = kCustomPromisifiedSymbol
+
+function callbackifyOnRejected(reason, cb) {
+  // `!reason` guard inspired by bluebird (Ref: https://goo.gl/t5IS6M).
+  // Because `null` is a special error value in callbacks which means "no error
+  // occurred", we error-wrap so the callback consumer can distinguish between
+  // "the promise rejected with null" or "the promise fulfilled with undefined".
+  if (!reason) {
+    var newReason = new Error('Promise was rejected with a falsy value');
+    newReason.reason = reason;
+    reason = newReason;
+  }
+  return cb(reason);
+}
+
+function callbackify(original) {
+  if (typeof original !== 'function') {
+    throw new TypeError('The "original" argument must be of type Function');
+  }
+
+  // We DO NOT return the promise as it gives the user a false sense that
+  // the promise is actually somehow related to the callback's execution
+  // and that the callback throwing will reject the promise.
+  function callbackified() {
+    var args = [];
+    for (var i = 0; i < arguments.length; i++) {
+      args.push(arguments[i]);
+    }
+
+    var maybeCb = args.pop();
+    if (typeof maybeCb !== 'function') {
+      throw new TypeError('The last argument must be of type Function');
+    }
+    var self = this;
+    var cb = function() {
+      return maybeCb.apply(self, arguments);
+    };
+    // In true node style we process the callback on `nextTick` with all the
+    // implications (stack, `uncaughtException`, `async_hooks`)
+    original.apply(this, args)
+      .then(function(ret) { process.nextTick(cb.bind(null, null, ret)) },
+            function(rej) { process.nextTick(callbackifyOnRejected.bind(null, rej, cb)) });
+  }
+
+  Object.setPrototypeOf(callbackified, Object.getPrototypeOf(original));
+  Object.defineProperties(callbackified,
+                          getOwnPropertyDescriptors(original));
+  return callbackified;
+}
+exports.callbackify = callbackify;
+
+}).call(this)}).call(this,require('_process'))
+},{"./support/isBuffer":115,"./support/types":116,"_process":59,"inherits":22}],118:[function(require,module,exports){
 (function (global){(function (){
 'use strict';
 
@@ -24208,7 +24801,7 @@ module.exports = function whichTypedArray(value) {
 };
 
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"available-typed-arrays":1,"call-bind/callBound":11,"es-abstract/helpers/getOwnPropertyDescriptor":14,"for-each":16,"has-tostringtag/shams":22,"is-typed-array":30}],119:[function(require,module,exports){
+},{"available-typed-arrays":1,"call-bind/callBound":7,"es-abstract/helpers/getOwnPropertyDescriptor":10,"for-each":12,"has-tostringtag/shams":18,"is-typed-array":26}],119:[function(require,module,exports){
 module.exports = extend
 
 var hasOwnProperty = Object.prototype.hasOwnProperty;
@@ -26882,7 +27475,7 @@ module.exports = {
     JSONLDParser: JSONLDParser
 };
 
-},{"jsonld":46}],126:[function(require,module,exports){
+},{"jsonld":43}],126:[function(require,module,exports){
 var async = require('./utils');
 var Tree = require('./btree').Tree;
 
@@ -27488,7 +28081,7 @@ if(!utils.isWorker()) {
         NetworkTransport: NetworkTransport
     };
 }
-},{"./utils":140,"http":94,"https":24,"url":115}],128:[function(require,module,exports){
+},{"./utils":140,"http":91,"https":20,"url":112}],128:[function(require,module,exports){
 module.exports = /*
  * Generated by PEG.js 0.10.0.
  *
@@ -52860,7 +53453,7 @@ module.exports = {
 
 // var loader = require("./js-communication/src/rdf_loader").RDFLoader; loader = new loader.RDFLoader(); loader.load('http://dbpedialite.org/titles/Lisp_%28programming_language%29', function(success, results){console.log("hey"); console.log(success); console.log(results)})
 
-},{"./jsonld_parser":125,"./network_transport":127,"./rvn3_parser":138,"./utils":140,"fs":3}],137:[function(require,module,exports){
+},{"./jsonld_parser":125,"./network_transport":127,"./rvn3_parser":138,"./utils":140,"fs":4}],137:[function(require,module,exports){
 // imports
 var _ = require("./utils");
 var QueryFilters = require("./query_filters").QueryFilters;
@@ -53589,7 +54182,7 @@ function convertEntity(entity) {
 module.exports = {
     RVN3Parser: RVN3Parser
 };
-},{"n3":54}],139:[function(require,module,exports){
+},{"n3":51}],139:[function(require,module,exports){
 // imports
 var QueryEngine = require("./query_engine").QueryEngine;
 var InMemoryQuadBackend = require("./quad_backend").QuadBackend;
@@ -54441,7 +55034,7 @@ Store.prototype.close = function(cb) {
 /**
  * Version of the store
  */
-Store.VERSION = "0.9.18-alpha.5";
+Store.VERSION = "0.9.18-alpha.6";
 
 /**
  * Create a new RDFStore instance that will be
@@ -55028,5 +55621,5 @@ module.exports = {
 };
 
 }).call(this)}).call(this,require('_process'))
-},{"_process":62}]},{},[139])(139)
+},{"_process":59}]},{},[139])(139)
 });
