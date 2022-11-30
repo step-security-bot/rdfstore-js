@@ -35,7 +35,7 @@
   },
   "optionalDependencies": {
     "indexeddb-js": "0.0.14",
-    "sqlite3": "^5.0.8"
+    "sqlite3": "^5.1.2"
   },
   "devDependencies": {
     "acorn": "^8.7.1",
