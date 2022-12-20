@@ -1,6 +1,6 @@
 {
   "name": "rdfstore",
-  "version": "0.9.18-alpha.6",
+  "version": "0.9.18-alpha.7",
   "description": "RDF graph store supporting the SPARQL query language",
   "scripts": {
     "test": "gulp specs"
@@ -35,11 +35,11 @@
   },
   "optionalDependencies": {
     "indexeddb-js": "0.0.14",
-    "sqlite3": "^5.0.8"
+    "sqlite3": "^5.1.4"
   },
   "devDependencies": {
-    "acorn": "^8.7.1",
-    "async": "^3.2.3",
+    "acorn": "^8.8.1",
+    "async": "^3.2.4",
     "browserify": "17.0.0",
     "escodegen": "^2.0.0",
     "glob": "^8.0.3",
@@ -48,7 +48,7 @@
     "gulp-jasmine": "^4.0.0",
     "gulp-minify": "^3.1.0",
     "lodash": "^4.17.21",
-    "minimatch": "^5.1.0",
+    "minimatch": "^5.1.1",
     "moment": "^2.29.4",
     "pegjs": "^0.10.0",
     "vinyl-source-stream": "^2.0.0"
