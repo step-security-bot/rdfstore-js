@@ -3,7 +3,17 @@
   "version": "0.9.18-alpha.7",
   "description": "RDF graph store supporting the SPARQL query language",
   "scripts": {
-    "test": "gulp specs"
+    "\n---HELPER---": "",
+    "clean-dist": "rimraf ./dist",
+    "browserify": "mkdirp dist && browserify ./src/store.js -s rdfstore -u sqlite3 -u indexeddb-js > ./dist/rdfstore.js",
+    "minify": "minify ./dist/rdfstore.js > ./dist/rdfstore_min.js",
+    "build:browser": "yarn clean-dist && yarn browserify && yarn minify",
+    "parse-grammar": "node pegjs/parse_grammar.js",
+    "performance": "node ./src/perftest/trees.js",
+    "specs": "jasmine ./spec/*.js",
+    "\n---MAIN---": "",
+    "build": "yarn parse-grammar && yarn build:browser",
+    "test": "yarn parse-grammar && yarn specs"
   },
   "keywords": [
     "RDF",
@@ -47,8 +57,12 @@
     "gulp-clean": "~0.4.0",
     "gulp-jasmine": "^4.0.0",
     "gulp-minify": "^3.1.0",
+    "jasmine": "^4.5.0",
+    "jasmine-reporters": "^2.5.2",
     "lodash": "^4.17.21",
+    "minify": "^9.1.0",
     "minimatch": "^5.1.2",
+    "mkdirp": "^1.0.4",
     "moment": "^2.29.4",
     "pegjs": "^0.10.0",
     "vinyl-source-stream": "^2.0.0"

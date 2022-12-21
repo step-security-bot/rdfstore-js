@@ -1,11 +1,7 @@
 #!/bin/bash
 
-echo "** CLEANING..."
-rm -f dist/*
-
 echo "** BUILDING..."
-gulp browserify
-gulp minimize
+yarn run build
 
 echo "** COPYING..."
 mv dist/rdfstore.js spec/browser/rdf_store.js 
