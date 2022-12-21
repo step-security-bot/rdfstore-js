@@ -1,9 +1,9 @@
 var Lexicon = require("../src/persistent_lexicon").Lexicon;
 var async = require('async');
 
-describe("PersistenLexicon", function(){
-/*
-    it("Should be possible to parse literals", function(done){
+describe("PersistentLexicon", function(){
+
+    xit("Should be possible to parse literals", function(done){
         new Lexicon(function(lexicon){
             var literal1 = '"this is a test"';
             var parsed = lexicon.parseLiteral(literal1);
@@ -23,7 +23,7 @@ describe("PersistenLexicon", function(){
         },"testLexicon");
     });
 
-    it("Should be possible to register tokens and retrieve them", function(done){
+    xit("Should be possible to register tokens and retrieve them", function(done){
         new Lexicon(function(lexicon){
 
             var oid1,oid2;
@@ -66,7 +66,7 @@ describe("PersistenLexicon", function(){
         },"testLexicon");
     });
 
-    it("Should be possible to unregister tokens", function(done){
+    xit("Should be possible to unregister tokens", function(done){
         new Lexicon(function(lexicon){
 
             var oid1;
@@ -98,5 +98,4 @@ describe("PersistenLexicon", function(){
 
         }, "testLexicon");
     })
-*/
 });
