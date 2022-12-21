@@ -34,7 +34,7 @@ jobs:
 
       - name: yarn install dependencies
         run: |
-          yarn install
+          yarn install --igrnoe-engines
 
       - name: Run CI tests
         run: |
