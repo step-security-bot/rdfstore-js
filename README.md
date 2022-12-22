@@ -133,29 +133,29 @@ $ bower install rdfstore
 Before running the build script, you must install JavaScript dependencies with [npm](https://npmjs.org/doc/install.html) (`npm` is shipped with [node](http://nodejs.org/download/)):
 
 ```bash
-$ npm install
+$ yarn install
 ```
 
-The library can be built using gulp:
+The library can be built using the 'test' npm script:
 
 ```bash
-$ gulp
+$ yarn run test
 ```
 
-The browser version can be built using the 'browser' gulp target:
+The browser version can be built using the 'build' npm script:
 
 ```bash
-$ gulp browser
+$ yarn run build
 ```
 
 ## Tests
 
 To execute the whole test suite of the library, including the DAWG
 test cases for SPARQL 1.0 and the test cases for SPARQL 1.1
-implemented at the moment, a gulp target can be executed:
+implemented at the moment, a npm script  can be executed:
 
 ```bash
-$ gulp specs
+$ yarn run test
 ```
 
 Additionally, there are some smoke tests for both browser versions that can be found in the 'spec/browser'' directory.

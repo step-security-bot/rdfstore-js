@@ -34,12 +34,12 @@ jobs:
 
       - name: yarn install dependencies
         run: |
-          yarn install
+          yarn install --ignore-engines
 
       - name: Run CI tests
         run: |
-          gulp
+          yarn test
 
       - name: Test build
         run: |
-          gulp browser
+          yarn build
