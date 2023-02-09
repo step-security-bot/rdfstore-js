@@ -48,7 +48,7 @@
     "sqlite3": "^5.1.4"
   },
   "devDependencies": {
-    "acorn": "^8.8.1",
+    "acorn": "^8.8.2",
     "async": "^3.2.4",
     "browserify": "17.0.0",
     "escodegen": "^2.0.0",
