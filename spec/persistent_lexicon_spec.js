@@ -1,5 +1,4 @@
-var Lexicon = require("../src/persistent_lexicon").Lexicon;
-var async = require('async');
+var Lexicon = require("../src/persistent_lexicon").PersistentLexicon;
 
 describe("PersistentLexicon", function(){
 
