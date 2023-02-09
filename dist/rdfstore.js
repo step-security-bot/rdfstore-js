@@ -16363,16 +16363,14 @@ module.exports = class IdentifierIssuer {
 };
 
 },{}],66:[function(require,module,exports){
-/*
- * Copyright (c) 2016-2021 Digital Bazaar, Inc. All rights reserved.
+/*!
+ * Copyright (c) 2016-2022 Digital Bazaar, Inc. All rights reserved.
  */
 'use strict';
 
 require('setimmediate');
 
 const crypto = self.crypto || self.msCrypto;
-
-// TODO: synchronous version no longer supported in browser
 
 module.exports = class MessageDigest {
   /**
@@ -16391,7 +16389,7 @@ module.exports = class MessageDigest {
     } else if(algorithm === 'sha1') {
       this.algorithm = {name: 'SHA-1'};
     } else {
-      throw new Error(`Unsupport algorithm "${algorithm}".`);
+      throw new Error(`Unsupported algorithm "${algorithm}".`);
     }
     this._content = '';
   }
@@ -16414,8 +16412,8 @@ module.exports = class MessageDigest {
 };
 
 },{"setimmediate":75}],67:[function(require,module,exports){
-/*
- * Copyright (c) 2016-2021 Digital Bazaar, Inc. All rights reserved.
+/*!
+ * Copyright (c) 2016-2022 Digital Bazaar, Inc. All rights reserved.
  */
 'use strict';
 
@@ -16616,18 +16614,16 @@ module.exports = class NQuads {
   }
 
   /**
-   * Converts an RDF quad to an N-Quad string (a single quad).
+   * Converts RDF quad components to an N-Quad string (a single quad).
    *
-   * @param quad the RDF quad convert.
+   * @param {Object} s - N-Quad subject component.
+   * @param {Object} p - N-Quad predicate component.
+   * @param {Object} o - N-Quad object component.
+   * @param {Object} g - N-Quad graph component.
    *
-   * @return the N-Quad string.
+   * @return {string} the N-Quad.
    */
-  static serializeQuad(quad) {
-    const s = quad.subject;
-    const p = quad.predicate;
-    const o = quad.object;
-    const g = quad.graph;
-
+  static serializeQuadComponents(s, p, o, g) {
     let nquad = '';
 
     // subject can only be NamedNode or BlankNode
@@ -16666,6 +16662,18 @@ module.exports = class NQuads {
 
     nquad += ' .\n';
     return nquad;
+  }
+
+  /**
+   * Converts an RDF quad to an N-Quad string (a single quad).
+   *
+   * @param quad the RDF quad convert.
+   *
+   * @return the N-Quad string.
+   */
+  static serializeQuad(quad) {
+    return NQuads.serializeQuadComponents(
+      quad.subject, quad.predicate, quad.object, quad.graph);
   }
 
   /**
@@ -16809,12 +16817,10 @@ function _unescape(s) {
 }
 
 },{}],68:[function(require,module,exports){
-/*
- * Copyright (c) 2016-2021 Digital Bazaar, Inc. All rights reserved.
+/*!
+ * Copyright (c) 2016-2022 Digital Bazaar, Inc. All rights reserved.
  */
 'use strict';
-
-// TODO: convert to ES6 iterable?
 
 module.exports = class Permuter {
   /**
@@ -16897,8 +16903,8 @@ module.exports = class Permuter {
 
 },{}],69:[function(require,module,exports){
 (function (setImmediate){(function (){
-/*
- * Copyright (c) 2016-2021 Digital Bazaar, Inc. All rights reserved.
+/*!
+ * Copyright (c) 2016-2022 Digital Bazaar, Inc. All rights reserved.
  */
 'use strict';
 
@@ -16908,16 +16914,22 @@ const Permuter = require('./Permuter');
 const NQuads = require('./NQuads');
 
 module.exports = class URDNA2015 {
-  constructor() {
+  constructor({
+    createMessageDigest = () => new MessageDigest('sha256'),
+    maxDeepIterations = Infinity
+  } = {}) {
     this.name = 'URDNA2015';
     this.blankNodeInfo = new Map();
     this.canonicalIssuer = new IdentifierIssuer('_:c14n');
-    this.hashAlgorithm = 'sha256';
+    this.createMessageDigest = createMessageDigest;
+    this.maxDeepIterations = maxDeepIterations;
     this.quads = null;
+    this.deepIterations = null;
   }
 
   // 4.4) Normalization Algorithm
   async main(dataset) {
+    this.deepIterations = new Map();
     this.quads = dataset;
 
     // 1) Create the normalization state.
@@ -17044,13 +17056,15 @@ module.exports = class URDNA2015 {
       // 7.1) Create a copy, quad copy, of quad and replace any existing
       // blank node identifiers using the canonical identifiers
       // previously issued by canonical issuer.
-      // Note: We optimize with shallow copies here.
-      const q = {...quad};
-      q.subject = this._useCanonicalId({component: q.subject});
-      q.object = this._useCanonicalId({component: q.object});
-      q.graph = this._useCanonicalId({component: q.graph});
+      // Note: We optimize away the copy here.
+      const nQuad = NQuads.serializeQuadComponents(
+        this._componentWithCanonicalId(quad.subject),
+        quad.predicate,
+        this._componentWithCanonicalId(quad.object),
+        this._componentWithCanonicalId(quad.graph)
+      );
       // 7.2) Add quad copy to the normalized dataset.
-      normalized.push(NQuads.serializeQuad(q));
+      normalized.push(nQuad);
     }
 
     // sort normalized output
@@ -17098,7 +17112,7 @@ module.exports = class URDNA2015 {
 
     // 5) Return the hash that results from passing the sorted, joined nquads
     // through the hash algorithm.
-    const md = new MessageDigest(this.hashAlgorithm);
+    const md = this.createMessageDigest();
     for(const nquad of nquads) {
       md.update(nquad);
     }
@@ -17123,7 +17137,7 @@ module.exports = class URDNA2015 {
 
     // 2) Initialize a string input to the value of position.
     // Note: We use a hash object instead.
-    const md = new MessageDigest(this.hashAlgorithm);
+    const md = this.createMessageDigest();
     md.update(position);
 
     // 3) If position is not g, append <, the value of the predicate in quad,
@@ -17142,10 +17156,17 @@ module.exports = class URDNA2015 {
 
   // 4.8) Hash N-Degree Quads
   async hashNDegreeQuads(id, issuer) {
+    const deepIterations = this.deepIterations.get(id) || 0;
+    if(deepIterations > this.maxDeepIterations) {
+      throw new Error(
+        `Maximum deep iterations (${this.maxDeepIterations}) exceeded.`);
+    }
+    this.deepIterations.set(id, deepIterations + 1);
+
     // 1) Create a hash to related blank nodes map for storing hashes that
     // identify related blank nodes.
     // Note: 2) and 3) handled within `createHashToRelated`
-    const md = new MessageDigest(this.hashAlgorithm);
+    const md = this.createMessageDigest();
     const hashToRelated = await this.createHashToRelated(id, issuer);
 
     // 4) Create an empty string, data to hash.
@@ -17388,9 +17409,11 @@ module.exports = class URDNA2015 {
     }
   }
 
-  _useCanonicalId({component}) {
+  // canonical ids for 7.1
+  _componentWithCanonicalId(component) {
     if(component.termType === 'BlankNode' &&
       !component.value.startsWith(this.canonicalIssuer.prefix)) {
+      // create new BlankNode
       return {
         termType: 'BlankNode',
         value: this.canonicalIssuer.getId(component.value)
@@ -17410,27 +17433,35 @@ function _stringHashCompare(a, b) {
 
 }).call(this)}).call(this,require("timers").setImmediate)
 },{"./IdentifierIssuer":65,"./MessageDigest":66,"./NQuads":67,"./Permuter":68,"timers":111}],70:[function(require,module,exports){
-/*
- * Copyright (c) 2016-2021 Digital Bazaar, Inc. All rights reserved.
+/*!
+ * Copyright (c) 2016-2022 Digital Bazaar, Inc. All rights reserved.
  */
 'use strict';
 
 const IdentifierIssuer = require('./IdentifierIssuer');
+// FIXME: do not import; convert to requiring a
+// hash factory
 const MessageDigest = require('./MessageDigest');
 const Permuter = require('./Permuter');
 const NQuads = require('./NQuads');
 
 module.exports = class URDNA2015Sync {
-  constructor() {
+  constructor({
+    createMessageDigest = () => new MessageDigest('sha256'),
+    maxDeepIterations = Infinity
+  } = {}) {
     this.name = 'URDNA2015';
     this.blankNodeInfo = new Map();
     this.canonicalIssuer = new IdentifierIssuer('_:c14n');
-    this.hashAlgorithm = 'sha256';
+    this.createMessageDigest = createMessageDigest;
+    this.maxDeepIterations = maxDeepIterations;
     this.quads = null;
+    this.deepIterations = null;
   }
 
   // 4.4) Normalization Algorithm
   main(dataset) {
+    this.deepIterations = new Map();
     this.quads = dataset;
 
     // 1) Create the normalization state.
@@ -17552,13 +17583,15 @@ module.exports = class URDNA2015Sync {
       // 7.1) Create a copy, quad copy, of quad and replace any existing
       // blank node identifiers using the canonical identifiers
       // previously issued by canonical issuer.
-      // Note: We optimize with shallow copies here.
-      const q = {...quad};
-      q.subject = this._useCanonicalId({component: q.subject});
-      q.object = this._useCanonicalId({component: q.object});
-      q.graph = this._useCanonicalId({component: q.graph});
+      // Note: We optimize away the copy here.
+      const nQuad = NQuads.serializeQuadComponents(
+        this._componentWithCanonicalId({component: quad.subject}),
+        quad.predicate,
+        this._componentWithCanonicalId({component: quad.object}),
+        this._componentWithCanonicalId({component: quad.graph})
+      );
       // 7.2) Add quad copy to the normalized dataset.
-      normalized.push(NQuads.serializeQuad(q));
+      normalized.push(nQuad);
     }
 
     // sort normalized output
@@ -17606,7 +17639,7 @@ module.exports = class URDNA2015Sync {
 
     // 5) Return the hash that results from passing the sorted, joined nquads
     // through the hash algorithm.
-    const md = new MessageDigest(this.hashAlgorithm);
+    const md = this.createMessageDigest();
     for(const nquad of nquads) {
       md.update(nquad);
     }
@@ -17631,7 +17664,7 @@ module.exports = class URDNA2015Sync {
 
     // 2) Initialize a string input to the value of position.
     // Note: We use a hash object instead.
-    const md = new MessageDigest(this.hashAlgorithm);
+    const md = this.createMessageDigest();
     md.update(position);
 
     // 3) If position is not g, append <, the value of the predicate in quad,
@@ -17650,10 +17683,17 @@ module.exports = class URDNA2015Sync {
 
   // 4.8) Hash N-Degree Quads
   hashNDegreeQuads(id, issuer) {
+    const deepIterations = this.deepIterations.get(id) || 0;
+    if(deepIterations > this.maxDeepIterations) {
+      throw new Error(
+        `Maximum deep iterations (${this.maxDeepIterations}) exceeded.`);
+    }
+    this.deepIterations.set(id, deepIterations + 1);
+
     // 1) Create a hash to related blank nodes map for storing hashes that
     // identify related blank nodes.
     // Note: 2) and 3) handled within `createHashToRelated`
-    const md = new MessageDigest(this.hashAlgorithm);
+    const md = this.createMessageDigest();
     const hashToRelated = this.createHashToRelated(id, issuer);
 
     // 4) Create an empty string, data to hash.
@@ -17883,9 +17923,11 @@ module.exports = class URDNA2015Sync {
     }
   }
 
-  _useCanonicalId({component}) {
+  // canonical ids for 7.1
+  _componentWithCanonicalId({component}) {
     if(component.termType === 'BlankNode' &&
       !component.value.startsWith(this.canonicalIssuer.prefix)) {
+      // create new BlankNode
       return {
         termType: 'BlankNode',
         value: this.canonicalIssuer.getId(component.value)
@@ -17900,18 +17942,19 @@ function _stringHashCompare(a, b) {
 }
 
 },{"./IdentifierIssuer":65,"./MessageDigest":66,"./NQuads":67,"./Permuter":68}],71:[function(require,module,exports){
-/*
- * Copyright (c) 2016-2021 Digital Bazaar, Inc. All rights reserved.
+/*!
+ * Copyright (c) 2016-2022 Digital Bazaar, Inc. All rights reserved.
  */
 'use strict';
 
+const MessageDigest = require('./MessageDigest');
 const URDNA2015 = require('./URDNA2015');
 
 module.exports = class URDNA2012 extends URDNA2015 {
   constructor() {
     super();
     this.name = 'URGNA2012';
-    this.hashAlgorithm = 'sha1';
+    this.createMessageDigest = () => new MessageDigest('sha1');
   }
 
   // helper for modifying component during Hash First Degree Quads
@@ -17991,19 +18034,20 @@ module.exports = class URDNA2012 extends URDNA2015 {
   }
 };
 
-},{"./URDNA2015":69}],72:[function(require,module,exports){
-/*
+},{"./MessageDigest":66,"./URDNA2015":69}],72:[function(require,module,exports){
+/*!
  * Copyright (c) 2016-2021 Digital Bazaar, Inc. All rights reserved.
  */
 'use strict';
 
+const MessageDigest = require('./MessageDigest');
 const URDNA2015Sync = require('./URDNA2015Sync');
 
 module.exports = class URDNA2012Sync extends URDNA2015Sync {
   constructor() {
     super();
     this.name = 'URGNA2012';
-    this.hashAlgorithm = 'sha1';
+    this.createMessageDigest = () => new MessageDigest('sha1');
   }
 
   // helper for modifying component during Hash First Degree Quads
@@ -18077,13 +18121,13 @@ module.exports = class URDNA2012Sync extends URDNA2015Sync {
   }
 };
 
-},{"./URDNA2015Sync":70}],73:[function(require,module,exports){
+},{"./MessageDigest":66,"./URDNA2015Sync":70}],73:[function(require,module,exports){
 /**
  * An implementation of the RDF Dataset Normalization specification.
  * This library works in the browser and node.js.
  *
  * BSD 3-Clause License
- * Copyright (c) 2016-2021 Digital Bazaar, Inc.
+ * Copyright (c) 2016-2022 Digital Bazaar, Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -18125,12 +18169,9 @@ try {
   rdfCanonizeNative = require('rdf-canonize-native');
 } catch(e) {}
 
-const api = {};
-module.exports = api;
-
 // expose helpers
-api.NQuads = require('./NQuads');
-api.IdentifierIssuer = require('./IdentifierIssuer');
+exports.NQuads = require('./NQuads');
+exports.IdentifierIssuer = require('./IdentifierIssuer');
 
 /**
  * Get or set native API.
@@ -18139,7 +18180,7 @@ api.IdentifierIssuer = require('./IdentifierIssuer');
  *
  * @return the currently set native API.
  */
-api._rdfCanonizeNative = function(api) {
+exports._rdfCanonizeNative = function(api) {
   if(api) {
     rdfCanonizeNative = api;
   }
@@ -18149,25 +18190,39 @@ api._rdfCanonizeNative = function(api) {
 /**
  * Asynchronously canonizes an RDF dataset.
  *
- * @param dataset the dataset to canonize.
- * @param options the options to use:
- *          algorithm the canonicalization algorithm to use, `URDNA2015` or
- *            `URGNA2012`.
- *          [useNative] use native implementation (default: false).
+ * @param {Array} dataset - The dataset to canonize.
+ * @param {object} options - The options to use:
+ *   {string} algorithm - The canonicalization algorithm to use, `URDNA2015` or
+ *     `URGNA2012`.
+ *   {Function} [createMessageDigest] - A factory function for creating a
+ *     `MessageDigest` interface that overrides the built-in message digest
+ *     implementation used by the canonize algorithm; note that using a hash
+ *     algorithm (or HMAC algorithm) that differs from the one specified by
+ *     the canonize algorithm will result in different output.
+ *   {boolean} [useNative=false] - Use native implementation.
+ *   {number} [maxDeepIterations=Infinity] - The maximum number of times to run
+ *     deep comparison algorithms (such as the N-Degree Hash Quads algorithm
+ *     used in URDNA2015) before bailing out and throwing an error; this is a
+ *     useful setting for preventing wasted CPU cycles or DoS when canonizing
+ *     meaningless or potentially malicious datasets, a recommended value is
+ *     `1`.
  *
  * @return a Promise that resolves to the canonicalized RDF Dataset.
  */
-api.canonize = async function(dataset, options) {
+exports.canonize = async function(dataset, options) {
   // back-compat with legacy dataset
   if(!Array.isArray(dataset)) {
-    dataset = api.NQuads.legacyDatasetToQuads(dataset);
+    dataset = exports.NQuads.legacyDatasetToQuads(dataset);
   }
 
   if(options.useNative) {
     if(!rdfCanonizeNative) {
       throw new Error('rdf-canonize-native not available');
     }
-    // TODO: convert native algorithm to Promise-based async
+    if(options.createMessageDigest) {
+      throw new Error(
+        '"createMessageDigest" cannot be used with "useNative".');
+    }
     return new Promise((resolve, reject) =>
       rdfCanonizeNative.canonize(dataset, options, (err, canonical) =>
         err ? reject(err) : resolve(canonical)));
@@ -18177,6 +18232,10 @@ api.canonize = async function(dataset, options) {
     return new URDNA2015(options).main(dataset);
   }
   if(options.algorithm === 'URGNA2012') {
+    if(options.createMessageDigest) {
+      throw new Error(
+        '"createMessageDigest" cannot be used with "URGNA2012".');
+    }
     return new URGNA2012(options).main(dataset);
   }
   if(!('algorithm' in options)) {
@@ -18191,30 +18250,49 @@ api.canonize = async function(dataset, options) {
  * only. It synchronously canonizes an RDF dataset and does not work in the
  * browser.
  *
- * @param dataset the dataset to canonize.
- * @param options the options to use:
- *          algorithm the canonicalization algorithm to use, `URDNA2015` or
- *            `URGNA2012`.
- *          [useNative] use native implementation (default: false).
+ * @param {Array} dataset - The dataset to canonize.
+ * @param {object} options - The options to use:
+ *   {string} algorithm - The canonicalization algorithm to use, `URDNA2015` or
+ *     `URGNA2012`.
+ *   {Function} [createMessageDigest] - A factory function for creating a
+ *     `MessageDigest` interface that overrides the built-in message digest
+ *     implementation used by the canonize algorithm; note that using a hash
+ *     algorithm (or HMAC algorithm) that differs from the one specified by
+ *     the canonize algorithm will result in different output.
+ *   {boolean} [useNative=false] - Use native implementation.
+ *   {number} [maxDeepIterations=Infinity] - The maximum number of times to run
+ *     deep comparison algorithms (such as the N-Degree Hash Quads algorithm
+ *     used in URDNA2015) before bailing out and throwing an error; this is a
+ *     useful setting for preventing wasted CPU cycles or DoS when canonizing
+ *     meaningless or potentially malicious datasets, a recommended value is
+ *     `1`.
  *
  * @return the RDF dataset in canonical form.
  */
-api._canonizeSync = function(dataset, options) {
+exports._canonizeSync = function(dataset, options) {
   // back-compat with legacy dataset
   if(!Array.isArray(dataset)) {
-    dataset = api.NQuads.legacyDatasetToQuads(dataset);
+    dataset = exports.NQuads.legacyDatasetToQuads(dataset);
   }
 
   if(options.useNative) {
-    if(rdfCanonizeNative) {
-      return rdfCanonizeNative.canonizeSync(dataset, options);
+    if(!rdfCanonizeNative) {
+      throw new Error('rdf-canonize-native not available');
     }
-    throw new Error('rdf-canonize-native not available');
+    if(options.createMessageDigest) {
+      throw new Error(
+        '"createMessageDigest" cannot be used with "useNative".');
+    }
+    return rdfCanonizeNative.canonizeSync(dataset, options);
   }
   if(options.algorithm === 'URDNA2015') {
     return new URDNA2015Sync(options).main(dataset);
   }
   if(options.algorithm === 'URGNA2012') {
+    if(options.createMessageDigest) {
+      throw new Error(
+        '"createMessageDigest" cannot be used with "URGNA2012".');
+    }
     return new URGNA2012Sync(options).main(dataset);
   }
   if(!('algorithm' in options)) {
@@ -55034,7 +55112,7 @@ Store.prototype.close = function(cb) {
 /**
  * Version of the store
  */
-Store.VERSION = "0.9.18-alpha.8";
+Store.VERSION = "0.9.18-alpha.9";
 
 /**
  * Create a new RDFStore instance that will be
