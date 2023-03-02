@@ -51,7 +51,6 @@
     "acorn": "^8.8.2",
     "async": "^3.2.4",
     "browserify": "17.0.0",
-    "escodegen": "^2.0.0",
     "jasmine": "^4.5.0",
     "jasmine-reporters": "^2.5.2",
     "lodash": "^4.17.21",
