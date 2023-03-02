@@ -7688,7 +7688,7 @@ async function _expandObject({
             const ve = _expandIri(typeScopedContext, v,
               {base: true, vocab: true},
               {...options, typeExpansion: true});
-            if(!_isAbsoluteIri(ve)) {
+            if(ve !== '@json' && !_isAbsoluteIri(ve)) {
               if(options.eventHandler) {
                 _handleEvent({
                   event: {
@@ -55112,7 +55112,7 @@ Store.prototype.close = function(cb) {
 /**
  * Version of the store
  */
-Store.VERSION = "0.9.18-alpha.9";
+Store.VERSION = "0.9.18-alpha.10";
 
 /**
  * Create a new RDFStore instance that will be
