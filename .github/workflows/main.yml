@@ -9,7 +9,7 @@ on:
     paths-ignore:
       - '**.md' # ignore changes in markdown files
   pull_request:
-    branches: [ master ]
+    branches: [ develop ]
     types: [ opened, synchronize, reopened ]
 
 jobs:
