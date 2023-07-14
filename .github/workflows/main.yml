@@ -19,7 +19,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest]
-        node-version: [14.19, 16.15, 18.x]
+        node-version: [16, 18.16, 20.x]
 
     steps:
       - name: Checkout repo
