@@ -41,5 +41,6 @@ jobs:
           yarn test
 
       - name: Test build
+        continue-on-error: false
         run: |
           yarn build
