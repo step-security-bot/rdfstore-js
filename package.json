@@ -7,7 +7,7 @@
     "clean-dist": "rimraf ./dist",
     "browserify": "mkdirp dist && browserify ./src/store.js -s rdfstore -u sqlite3 -u indexeddb-js > ./dist/rdfstore.js",
     "minify": "minify ./dist/rdfstore.js > ./dist/rdfstore_min.js",
-    "build:browser": "yarn clean-dist && yarn browserify && yarn minify",
+    "build:browser": "yarn clean-dist && yarn browserify && yarn minify || exit 1",
     "parse-grammar": "node pegjs/parse_grammar.js",
     "performance": "node ./src/perftest/trees.js",
     "specs": "jasmine ./spec/*.js",
