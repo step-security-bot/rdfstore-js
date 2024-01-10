@@ -4515,8 +4515,8 @@ api.compact = async ({
 
           let key;
           if(container.includes('@language')) {
-          // if container is a language map, simplify compacted value to
-          // a simple string
+            // if container is a language map, simplify compacted value to
+            // a simple string
             if(_isValue(compactedItem)) {
               compactedItem = compactedItem['@value'];
             }
@@ -5874,7 +5874,7 @@ api.createTermDefinition = ({
       // indicate if this term may be used as a compact IRI prefix
       mapping._prefix = (simpleTerm &&
         !mapping._termHasColon &&
-        id.match(/[:\/\?#\[\]@]$/));
+        id.match(/[:\/\?#\[\]@]$/) !== null);
     }
   }
 
@@ -7017,7 +7017,9 @@ const _notSafeEventCodes = new Set([
   'relative graph reference',
   'relative object reference',
   'relative predicate reference',
-  'relative subject reference'
+  'relative subject reference',
+  // toRDF / fromRDF
+  'rdfDirection not set'
 ]);
 
 // safe handler that rejects unsafe warning conditions
@@ -7446,47 +7448,69 @@ api.expand = async ({
   // drop certain top-level objects that do not occur in lists
   if(_isObject(rval) &&
     !options.keepFreeFloatingNodes && !insideList &&
-    (activeProperty === null || expandedActiveProperty === '@graph')) {
+    (activeProperty === null ||
+      expandedActiveProperty === '@graph' ||
+      (_getContextValue(activeCtx, activeProperty, '@container') || [])
+        .includes('@graph')
+    )) {
     // drop empty object, top-level @value/@list, or object with only @id
-    if(count === 0 || '@value' in rval || '@list' in rval ||
-      (count === 1 && '@id' in rval)) {
-      // FIXME
-      if(options.eventHandler) {
-        // FIXME: one event or diff event for empty, @v/@l, {@id}?
-        let code;
-        let message;
-        if(count === 0) {
-          code = 'empty object';
-          message = 'Dropping empty object.';
-        } else if('@value' in rval) {
-          code = 'object with only @value';
-          message = 'Dropping object with only @value.';
-        } else if('@list' in rval) {
-          code = 'object with only @list';
-          message = 'Dropping object with only @list.';
-        } else if(count === 1 && '@id' in rval) {
-          code = 'object with only @id';
-          message = 'Dropping object with only @id.';
-        }
-        _handleEvent({
-          event: {
-            type: ['JsonLdEvent'],
-            code,
-            level: 'warning',
-            message,
-            details: {
-              value: rval
-            }
-          },
-          options
-        });
-      }
-      rval = null;
-    }
+    rval = _dropUnsafeObject({value: rval, count, options});
   }
 
   return rval;
 };
+
+/**
+ * Drop empty object, top-level @value/@list, or object with only @id
+ *
+ * @param value Value to check.
+ * @param count Number of properties in object.
+ * @param options The expansion options.
+ *
+ * @return null if dropped, value otherwise.
+ */
+function _dropUnsafeObject({
+  value,
+  count,
+  options
+}) {
+  if(count === 0 || '@value' in value || '@list' in value ||
+    (count === 1 && '@id' in value)) {
+    // FIXME
+    if(options.eventHandler) {
+      // FIXME: one event or diff event for empty, @v/@l, {@id}?
+      let code;
+      let message;
+      if(count === 0) {
+        code = 'empty object';
+        message = 'Dropping empty object.';
+      } else if('@value' in value) {
+        code = 'object with only @value';
+        message = 'Dropping object with only @value.';
+      } else if('@list' in value) {
+        code = 'object with only @list';
+        message = 'Dropping object with only @list.';
+      } else if(count === 1 && '@id' in value) {
+        code = 'object with only @id';
+        message = 'Dropping object with only @id.';
+      }
+      _handleEvent({
+        event: {
+          type: ['JsonLdEvent'],
+          code,
+          level: 'warning',
+          message,
+          details: {
+            value
+          }
+        },
+        options
+      });
+    }
+    return null;
+  }
+  return value;
+}
 
 /**
  * Expand each key and value of element adding to result
@@ -7708,7 +7732,7 @@ async function _expandObject({
           }
           return v;
         }),
-        {propertyIsArray: options.isFrame});
+        {propertyIsArray: !!options.isFrame});
       continue;
     }
 
@@ -7849,8 +7873,7 @@ async function _expandObject({
 
       expandedValue = await api.expand({
         activeCtx,
-        activeProperty:
-        '@reverse',
+        activeProperty: '@reverse',
         element: value,
         options
       });
@@ -7909,7 +7932,7 @@ async function _expandObject({
       });
     }
 
-    const container = _getContextValue(termCtx, key, '@container') || [];
+    const container = _getContextValue(activeCtx, key, '@container') || [];
 
     if(container.includes('@language') && _isObject(value)) {
       const direction = _getContextValue(termCtx, key, '@direction');
@@ -7955,7 +7978,7 @@ async function _expandObject({
       });
     } else {
       // recurse into @list or @set
-      const isList = (expandedProperty === '@list');
+      const isList = expandedProperty === '@list';
       if(isList || expandedProperty === '@set') {
         let nextActiveProperty = activeProperty;
         if(isList && expandedActiveProperty === '@graph') {
@@ -8007,9 +8030,21 @@ async function _expandObject({
     // index cases handled above
     if(container.includes('@graph') &&
       !container.some(key => key === '@id' || key === '@index')) {
-      // ensure expanded values are arrays
-      expandedValue = _asArray(expandedValue)
-        .map(v => ({'@graph': _asArray(v)}));
+      // ensure expanded values are in an array
+      expandedValue = _asArray(expandedValue);
+      if(!options.isFrame) {
+        // drop items if needed
+        expandedValue = expandedValue.filter(v => {
+          const count = Object.keys(v).length;
+          return _dropUnsafeObject({value: v, count, options}) !== null;
+        });
+      }
+      if(expandedValue.length === 0) {
+        // all items dropped, skip adding and continue
+        continue;
+      }
+      // convert to graph
+      expandedValue = expandedValue.map(v => ({'@graph': _asArray(v)}));
     }
 
     // FIXME: can this be merged with code above to simplify?
@@ -8828,8 +8863,9 @@ function _validateFrame(frame) {
 
   if('@type' in frame[0]) {
     for(const type of util.asArray(frame[0]['@type'])) {
-      // @id must be wildcard or an IRI
-      if(!(types.isObject(type) || url.isAbsolute(type)) ||
+      // @type must be wildcard, IRI, or @json
+      if(!(types.isObject(type) || url.isAbsolute(type) ||
+          (type === '@json')) ||
         (types.isString(type) && type.indexOf('_:') === 0)) {
         throw new JsonLdError(
           'Invalid JSON-LD syntax; invalid @type in frame.',
@@ -9190,7 +9226,7 @@ function _valueMatch(pattern, value) {
 
 },{"./JsonLdError":28,"./context":35,"./graphTypes":42,"./nodeMap":44,"./types":47,"./url":48,"./util":49}],41:[function(require,module,exports){
 /*
- * Copyright (c) 2017 Digital Bazaar, Inc. All rights reserved.
+ * Copyright (c) 2017-2023 Digital Bazaar, Inc. All rights reserved.
  */
 'use strict';
 
@@ -9243,14 +9279,28 @@ api.fromRDF = async (
   dataset,
   options
 ) => {
-  const defaultGraph = {};
-  const graphMap = {'@default': defaultGraph};
-  const referencedOnce = {};
   const {
     useRdfType = false,
     useNativeTypes = false,
     rdfDirection = null
   } = options;
+  // FIXME: use Maps?
+  const defaultGraph = {};
+  const graphMap = {'@default': defaultGraph};
+  const referencedOnce = {};
+  if(rdfDirection) {
+    if(rdfDirection === 'compound-literal') {
+      throw new JsonLdError(
+        'Unsupported rdfDirection value.',
+        'jsonld.InvalidRdfDirection',
+        {value: rdfDirection});
+    } else if(rdfDirection !== 'i18n-datatype') {
+      throw new JsonLdError(
+        'Unknown rdfDirection value.',
+        'jsonld.InvalidRdfDirection',
+        {value: rdfDirection});
+    }
+  }
 
   for(const quad of dataset) {
     // TODO: change 'name' to 'graph'
@@ -9818,7 +9868,8 @@ const _resolvedContextCache = new LRU({max: RESOLVED_CONTEXT_CACHE_MAX_SIZE});
  *          [graph] true to always output a top-level graph (default: false).
  *          [expandContext] a context to expand with.
  *          [skipExpansion] true to assume the input is expanded and skip
- *            expansion, false not to, defaults to false.
+ *            expansion, false not to, defaults to false. Some well-formed
+ *            and safe-mode checks may be omitted.
  *          [documentLoader(url, options)] the document loader.
  *          [framing] true if compaction is occuring during a framing operation.
  *          [safe] true to use safe mode. (default: false)
@@ -10238,13 +10289,16 @@ jsonld.link = async function(input, ctx, options) {
  *          [base] the base IRI to use (default: `null`).
  *          [expandContext] a context to expand with.
  *          [skipExpansion] true to assume the input is expanded and skip
- *            expansion, false not to, defaults to false.
+ *            expansion, false not to, defaults to false. Some well-formed
+ *            and safe-mode checks may be omitted.
  *          [inputFormat] the format if input is not JSON-LD:
  *            'application/n-quads' for N-Quads.
  *          [format] the format if output is a string:
  *            'application/n-quads' for N-Quads.
  *          [documentLoader(url, options)] the document loader.
  *          [useNative] true to use a native canonize algorithm
+ *          [rdfDirection] null or 'i18n-datatype' to support RDF
+ *             transformation of @direction (default: null).
  *          [safe] true to use safe mode. (default: true).
  *          [contextResolver] internal use only.
  *
@@ -10301,8 +10355,8 @@ jsonld.normalize = jsonld.canonize = async function(input, options) {
  *            (default: false).
  *          [useNativeTypes] true to convert XSD types into native types
  *            (boolean, integer, double), false not to (default: false).
- *          [rdfDirection] 'i18n-datatype' to support RDF transformation of
- *             @direction (default: null).
+ *          [rdfDirection] null or 'i18n-datatype' to support RDF
+ *             transformation of @direction (default: null).
  *          [safe] true to use safe mode. (default: false)
  *
  * @return a Promise that resolves to the JSON-LD document.
@@ -10347,13 +10401,16 @@ jsonld.fromRDF = async function(dataset, options) {
  *          [base] the base IRI to use.
  *          [expandContext] a context to expand with.
  *          [skipExpansion] true to assume the input is expanded and skip
- *            expansion, false not to, defaults to false.
+ *            expansion, false not to, defaults to false. Some well-formed
+ *            and safe-mode checks may be omitted.
  *          [format] the format to use to output a string:
  *            'application/n-quads' for N-Quads.
  *          [produceGeneralizedRdf] true to output generalized RDF, false
  *            to produce only standard RDF (default: false).
  *          [documentLoader(url, options)] the document loader.
  *          [safe] true to use safe mode. (default: false)
+ *          [rdfDirection] null or 'i18n-datatype' to support RDF
+ *             transformation of @direction (default: null).
  *          [contextResolver] internal use only.
  *
  * @return a Promise that resolves to the RDF dataset.
@@ -11097,7 +11154,7 @@ api.setupGlobals = function(jsonld) {
 
 },{"./documentLoaders/xhr":36}],46:[function(require,module,exports){
 /*
- * Copyright (c) 2017 Digital Bazaar, Inc. All rights reserved.
+ * Copyright (c) 2017-2023 Digital Bazaar, Inc. All rights reserved.
  */
 'use strict';
 
@@ -11105,6 +11162,7 @@ const {createNodeMap} = require('./nodeMap');
 const {isKeyword} = require('./context');
 const graphTypes = require('./graphTypes');
 const jsonCanonicalize = require('canonicalize');
+const JsonLdError = require('./JsonLdError');
 const types = require('./types');
 const util = require('./util');
 
@@ -11410,18 +11468,61 @@ function _objectToRDF(
     } else if(types.isNumber(value)) {
       object.value = value.toFixed(0);
       object.datatype.value = datatype || XSD_INTEGER;
-    } else if(rdfDirection === 'i18n-datatype' &&
-      '@direction' in item) {
-      const datatype = 'https://www.w3.org/ns/i18n#' +
-        (item['@language'] || '') +
-        `_${item['@direction']}`;
+    } else if('@direction' in item && rdfDirection === 'i18n-datatype') {
+      const language = (item['@language'] || '').toLowerCase();
+      const direction = item['@direction'];
+      const datatype = `https://www.w3.org/ns/i18n#${language}_${direction}`;
       object.datatype.value = datatype;
       object.value = value;
+    } else if('@direction' in item && rdfDirection === 'compound-literal') {
+      throw new JsonLdError(
+        'Unsupported rdfDirection value.',
+        'jsonld.InvalidRdfDirection',
+        {value: rdfDirection});
+    } else if('@direction' in item && rdfDirection) {
+      throw new JsonLdError(
+        'Unknown rdfDirection value.',
+        'jsonld.InvalidRdfDirection',
+        {value: rdfDirection});
     } else if('@language' in item) {
+      if('@direction' in item && !rdfDirection) {
+        if(options.eventHandler) {
+          // FIXME: only emit once?
+          _handleEvent({
+            event: {
+              type: ['JsonLdEvent'],
+              code: 'rdfDirection not set',
+              level: 'warning',
+              message: 'rdfDirection not set for @direction.',
+              details: {
+                object: object.value
+              }
+            },
+            options
+          });
+        }
+      }
       object.value = value;
       object.datatype.value = datatype || RDF_LANGSTRING;
       object.language = item['@language'];
     } else {
+      if('@direction' in item && !rdfDirection) {
+        if(options.eventHandler) {
+          // FIXME: only emit once?
+          _handleEvent({
+            event: {
+              type: ['JsonLdEvent'],
+              code: 'rdfDirection not set',
+              level: 'warning',
+              message: 'rdfDirection not set for @direction.',
+              details: {
+                object: object.value
+              }
+            },
+            options
+          });
+        }
+      }
       object.value = value;
       object.datatype.value = datatype || XSD_STRING;
     }
@@ -11459,7 +11560,7 @@ function _objectToRDF(
   return object;
 }
 
-},{"./constants":34,"./context":35,"./events":37,"./graphTypes":42,"./nodeMap":44,"./types":47,"./url":48,"./util":49,"canonicalize":9}],47:[function(require,module,exports){
+},{"./JsonLdError":28,"./constants":34,"./context":35,"./events":37,"./graphTypes":42,"./nodeMap":44,"./types":47,"./url":48,"./util":49,"canonicalize":9}],47:[function(require,module,exports){
 /*
  * Copyright (c) 2017 Digital Bazaar, Inc. All rights reserved.
  */
@@ -11584,7 +11685,7 @@ api.parsers = {
       'hostname', 'port', 'path', 'directory', 'file', 'query', 'fragment'
     ],
     /* eslint-disable-next-line max-len */
-    regex: /^(([^:\/?#]+):)?(?:\/\/((?:(([^:@]*)(?::([^:@]*))?)?@)?([^:\/?#]*)(?::(\d*))?))?(?:(((?:[^?#\/]*\/)*)([^?#]*))(?:\?([^#]*))?(?:#(.*))?)/
+    regex: /^(([a-zA-Z][a-zA-Z0-9+-.]*):)?(?:\/\/((?:(([^:@]*)(?::([^:@]*))?)?@)?([^:\/?#]*)(?::(\d*))?))?(?:(((?:[^?#\/]*\/)*)([^?#]*))(?:\?([^#]*))?(?:#(.*))?)/
   }
 };
 api.parse = (str, parser) => {
@@ -16916,11 +17017,12 @@ const NQuads = require('./NQuads');
 module.exports = class URDNA2015 {
   constructor({
     createMessageDigest = () => new MessageDigest('sha256'),
+    canonicalIdMap = new Map(),
     maxDeepIterations = Infinity
   } = {}) {
     this.name = 'URDNA2015';
     this.blankNodeInfo = new Map();
-    this.canonicalIssuer = new IdentifierIssuer('_:c14n');
+    this.canonicalIssuer = new IdentifierIssuer('_:c14n', canonicalIdMap);
     this.createMessageDigest = createMessageDigest;
     this.maxDeepIterations = maxDeepIterations;
     this.quads = null;
@@ -17448,11 +17550,12 @@ const NQuads = require('./NQuads');
 module.exports = class URDNA2015Sync {
   constructor({
     createMessageDigest = () => new MessageDigest('sha256'),
+    canonicalIdMap = new Map(),
     maxDeepIterations = Infinity
   } = {}) {
     this.name = 'URDNA2015';
     this.blankNodeInfo = new Map();
-    this.canonicalIssuer = new IdentifierIssuer('_:c14n');
+    this.canonicalIssuer = new IdentifierIssuer('_:c14n', canonicalIdMap);
     this.createMessageDigest = createMessageDigest;
     this.maxDeepIterations = maxDeepIterations;
     this.quads = null;
@@ -18127,7 +18230,7 @@ module.exports = class URDNA2012Sync extends URDNA2015Sync {
  * This library works in the browser and node.js.
  *
  * BSD 3-Clause License
- * Copyright (c) 2016-2022 Digital Bazaar, Inc.
+ * Copyright (c) 2016-2023 Digital Bazaar, Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -18169,6 +18272,15 @@ try {
   rdfCanonizeNative = require('rdf-canonize-native');
 } catch(e) {}
 
+// return a dataset from input dataset or legacy dataset
+function _inputToDataset(input/*, options*/) {
+  // back-compat with legacy dataset
+  if(!Array.isArray(input)) {
+    return exports.NQuads.legacyDatasetToQuads(input);
+  }
+  return input;
+}
+
 // expose helpers
 exports.NQuads = require('./NQuads');
 exports.IdentifierIssuer = require('./IdentifierIssuer');
@@ -18190,7 +18302,8 @@ exports._rdfCanonizeNative = function(api) {
 /**
  * Asynchronously canonizes an RDF dataset.
  *
- * @param {Array} dataset - The dataset to canonize.
+ * @param {Array|object|string} input - The input to canonize given as a
+ *   dataset or legacy dataset.
  * @param {object} options - The options to use:
  *   {string} algorithm - The canonicalization algorithm to use, `URDNA2015` or
  *     `URGNA2012`.
@@ -18199,6 +18312,9 @@ exports._rdfCanonizeNative = function(api) {
  *     implementation used by the canonize algorithm; note that using a hash
  *     algorithm (or HMAC algorithm) that differs from the one specified by
  *     the canonize algorithm will result in different output.
+ *   {Map} [canonicalIdMap] - An optional Map to be populated by the canonical
+ *     identifier issuer with the bnode identifier mapping generated by the
+ *     canonicalization algorithm.
  *   {boolean} [useNative=false] - Use native implementation.
  *   {number} [maxDeepIterations=Infinity] - The maximum number of times to run
  *     deep comparison algorithms (such as the N-Degree Hash Quads algorithm
@@ -18209,11 +18325,8 @@ exports._rdfCanonizeNative = function(api) {
  *
  * @return a Promise that resolves to the canonicalized RDF Dataset.
  */
-exports.canonize = async function(dataset, options) {
-  // back-compat with legacy dataset
-  if(!Array.isArray(dataset)) {
-    dataset = exports.NQuads.legacyDatasetToQuads(dataset);
-  }
+exports.canonize = async function(input, options) {
+  const dataset = _inputToDataset(input, options);
 
   if(options.useNative) {
     if(!rdfCanonizeNative) {
@@ -18250,7 +18363,8 @@ exports.canonize = async function(dataset, options) {
  * only. It synchronously canonizes an RDF dataset and does not work in the
  * browser.
  *
- * @param {Array} dataset - The dataset to canonize.
+ * @param {Array|object|string} input - The input to canonize given as a
+ *   dataset or legacy dataset.
  * @param {object} options - The options to use:
  *   {string} algorithm - The canonicalization algorithm to use, `URDNA2015` or
  *     `URGNA2012`.
@@ -18269,11 +18383,8 @@ exports.canonize = async function(dataset, options) {
  *
  * @return the RDF dataset in canonical form.
  */
-exports._canonizeSync = function(dataset, options) {
-  // back-compat with legacy dataset
-  if(!Array.isArray(dataset)) {
-    dataset = exports.NQuads.legacyDatasetToQuads(dataset);
-  }
+exports._canonizeSync = function(input, options) {
+  const dataset = _inputToDataset(input, options);
 
   if(options.useNative) {
     if(!rdfCanonizeNative) {
@@ -55112,7 +55223,7 @@ Store.prototype.close = function(cb) {
 /**
  * Version of the store
  */
-Store.VERSION = "0.9.18-alpha.12";
+Store.VERSION = "0.9.18-alpha.13";
 
 /**
  * Create a new RDFStore instance that will be
