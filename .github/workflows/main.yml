@@ -9,7 +9,7 @@ on:
     paths-ignore:
       - '**.md' # ignore changes in markdown files
   pull_request:
-    branches: [ master ]
+    branches: [ develop ]
     types: [ opened, synchronize, reopened ]
 
 jobs:
@@ -19,16 +19,16 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest]
-        node-version: [14.19, 16.15, 18.x]
+        node-version: [18.19, 20.9]
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # ratchet:actions/checkout@v4.1.1
         with:
           fetch-depth: 0  # Get all history and branches
 
       - name: Set up node ${{ matrix.node-version}}
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@b39b52d1213e96004bfcb1c61a8a6fa8ab84f3e8 # ratchet:actions/setup-node@v4.0.1
         with:
           node-version: ${{ matrix.node-version }}
 
@@ -41,5 +41,6 @@ jobs:
           yarn test
 
       - name: Test build
+        continue-on-error: false
         run: |
           yarn build
